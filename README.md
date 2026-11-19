@@ -2,17 +2,18 @@
 
 Symbolic state-space search with decision diagrams: symbolic BFS, bidirectional search, BDDA* and SymBA*.
 
-## Planned scope
-
-- Symbolic BFS and Dijkstra
-- Symbolic bidirectional search
-- BDDA*
-- SymBA*
-- Transition relations, image and preimage, variable ordering
-
 ## Status
 
-Pre-release. Version 0.0.0 reserves the name; the API is not started yet and will change.
+Pre-release (0.0.0); the API will change.
+
+- Done: binary encoding of `sas_plus::Task` states, per-operator transition
+  relations (with conditional effects), symbolic forward and backward BFS
+  (unit cost) with plan reconstruction. BDDs come from
+  [`oxidd`](https://crates.io/crates/oxidd) behind an internal backend trait.
+- Planned: symbolic Dijkstra, bidirectional search, BDDA*, SymBA*, symbolic
+  abstraction heuristics. Axioms are not supported yet.
+
+See [`docs/design.md`](docs/design.md) for the design and milestones.
 
 ## License
 

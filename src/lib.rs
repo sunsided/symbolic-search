@@ -1,31 +1,62 @@
 //! # Symbolic search
 //!
-//! Symbolic state-space search with decision diagrams: symbolic BFS, bidirectional search, `BDDA*` and `SymBA*`.
+//! Symbolic state-space search over SAS+ tasks with binary decision diagrams
+//! (BDDs). Sets of states are BDDs over a binary encoding of the task's
+//! variables; one search step maps a whole layer of states at once through
+//! the operators' transition relations.
 //!
-//! ## Planned scope
+//! ## Implemented
 //!
-//! - Symbolic BFS and Dijkstra
-//! - Symbolic bidirectional search
-//! - `BDDA*`
-//! - `SymBA*`
-//! - Transition relations, image and preimage, variable ordering
+//! - Binary encoding of [`sas_plus::Task`] states, with interleaved current
+//!   and next bits.
+//! - Per-operator transition relations, including conditional effects.
+//! - Symbolic forward and backward breadth-first search (unit cost) with
+//!   layered plan reconstruction.
+//!
+//! ## Planned
+//!
+//! Symbolic Dijkstra, bidirectional search, `BDDA*`, `SymBA*` and symbolic
+//! abstraction heuristics. See `docs/design.md` in the repository.
+//!
+//! ## Example
+//!
+//! ```
+//! use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+//! use symbolic_search::{Config, SymbolicTask};
+//!
+//! // One counter from 0 to 2, incremented by two operators.
+//! let step = |from, to| Operator {
+//!     name: format!("inc{from}"),
+//!     pre: vec![Fact::new(0, from)],
+//!     eff: vec![Effect::new(Fact::new(0, to))],
+//!     cost: 1,
+//! };
+//! let task = Task {
+//!     variables: vec![Variable::new("counter", 3)],
+//!     operators: vec![step(0, 1), step(1, 2)],
+//!     initial: State(vec![0]),
+//!     goal: vec![Fact::new(0, 2)],
+//!     axioms: vec![],
+//! };
+//!
+//! let symbolic = SymbolicTask::new(&task, Config::default())?;
+//! let plan = symbolic.forward_bfs()?.expect("the goal is reachable");
+//! assert_eq!(plan, [0, 1]);
+//! # Ok::<(), symbolic_search::Error>(())
+//! ```
 //!
 //! ## Status
 //!
-//! Pre-release. Version 0.0.0 reserves the name; the API is not started yet and will change.
+//! Pre-release (0.0.0). The API will change.
 //!
 //! Repository: <https://github.com/sunsided/symbolic-search>
 
-#![no_std]
+mod backend;
+mod encoding;
+mod error;
+mod model;
+mod relation;
+mod search;
 
-/// Transitions over sets of states, as used by symbolic search.
-pub trait SymbolicTransitions {
-    /// A set of states, typically a decision diagram.
-    type Set;
-
-    /// The states reachable from `states` by one transition.
-    fn image(&self, states: &Self::Set) -> Self::Set;
-
-    /// The states that reach `states` by one transition.
-    fn preimage(&self, states: &Self::Set) -> Self::Set;
-}
+pub use error::Error;
+pub use search::{Config, SymbolicTask};
