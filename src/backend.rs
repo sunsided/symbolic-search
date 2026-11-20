@@ -97,6 +97,9 @@ pub(crate) trait Backend: Sized {
         vars: &Self::VarSet,
     ) -> BackendResult<Self::Set>;
 
+    /// Existential quantification `∃ vars. a`: forgets the values of `vars`.
+    fn exists(&self, a: &Self::Set, vars: &Self::VarSet) -> BackendResult<Self::Set>;
+
     /// Builds a reusable renaming that replaces each `from` variable by the
     /// matching `to` variable, in parallel.
     ///
@@ -110,6 +113,11 @@ pub(crate) trait Backend: Sized {
 
     /// Whether `a` is the empty set.
     fn is_empty(&self, a: &Self::Set) -> bool;
+
+    /// Number of diagram nodes of `a`, terminals included. A size measure for
+    /// thresholds and for choosing the cheaper search direction; linear in
+    /// the size of `a`.
+    fn node_count(&self, a: &Self::Set) -> usize;
 
     /// One satisfying assignment of `a`, indexed by variable number, or `None`
     /// when `a` is empty. Variables the diagram leaves open are set to

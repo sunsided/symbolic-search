@@ -1,33 +1,50 @@
-//! The symbolic model of a task and the layered breadth-first search on it.
+//! The symbolic model of a task and the searches on it.
 //!
 //! ```mermaid
 //! graph LR
 //!     Task --> Encoding
-//!     Task --> Relations[per-operator relations]
-//!     Encoding --> Relations
-//!     Relations --> Explore[explore: layers until target hit]
-//!     Explore --> Trace[trace: walk layers back to a plan]
+//!     Task --> Operators[per-operator relations]
+//!     Encoding --> Operators
+//!     Operators --> Groups[merged groups per cost]
+//!     Groups --> Space[concrete or projected space]
+//!     Space --> Frontier[open and closed per g]
+//!     Heuristic[h partition] --> Frontier
+//!     Frontier --> Trace[walk closed layers back to a plan]
+//!     Operators --> Trace
 //! ```
+//!
+//! Unit-cost BFS lives here; the cost-aware searches live in the
+//! submodules.
+
+mod abstraction;
+mod best_first;
+mod bidirectional;
+pub(crate) mod frontier;
+pub(crate) mod heuristic;
+pub(crate) mod space;
+mod symba;
 
 use sas_plus::{OpId, Task};
 
-use crate::Error;
 use crate::backend::{Backend, BackendResult, Capacity};
 use crate::encoding::Encoding;
-use crate::relation::OperatorRelation;
+use crate::relation::{self, Relation};
+use crate::{Config, Error};
+use frontier::Frontier;
+use space::Space;
 
 /// Search direction of one symbolic step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Direction {
-    /// Successors via [`OperatorRelation::image`].
+    /// Successors via [`Relation::image`].
     Forward,
-    /// Predecessors via [`OperatorRelation::preimage`].
+    /// Predecessors via [`Relation::preimage`].
     Backward,
 }
 
 impl Direction {
     /// The other direction; plan extraction walks against the search.
-    fn reverse(self) -> Self {
+    pub(crate) fn reverse(self) -> Self {
         match self {
             Self::Forward => Self::Backward,
             Self::Backward => Self::Forward,
@@ -44,57 +61,113 @@ struct Layers<S> {
     hit: S,
 }
 
+/// One step of [`Model::trace_frontier`].
+struct BackStep<S> {
+    /// The operator of the step.
+    op: OpId,
+    /// The singleton state the step leads to.
+    state: S,
+    /// Its cost in the frontier.
+    g: u64,
+    /// Index of the closed entry that holds it.
+    entry: usize,
+}
+
 /// A SAS+ task compiled to decision diagrams on backend `B`.
 pub(crate) struct Model<B: Backend> {
     /// The diagram manager that owns every set below.
     backend: B,
     /// Bit layout of the task's variables.
     encoding: Encoding,
-    /// One relation per operator, in operator id order.
-    relations: Vec<OperatorRelation<B>>,
-    /// The singleton set of the initial state.
-    initial: B::Set,
-    /// The goal states, restricted to valid codes.
-    goal: B::Set,
+    /// One relation per operator, indexed by operator id. Used for plan
+    /// reconstruction.
+    operators: Vec<Relation<B>>,
+    /// The concrete state space with merged relation groups, used for
+    /// search steps.
+    concrete: Space<B>,
+    /// Variables of goal facts, sorted; abstractions drop them last.
+    goal_vars: Vec<sas_plus::VarId>,
 }
 
 impl<B: Backend> Model<B> {
-    /// Compiles `task` into diagrams with the given capacity.
+    /// Compiles `task` into diagrams with the limits and options of `config`.
     ///
     /// # Errors
     ///
     /// - [`Error::InvalidTask`] when [`Task::validate`] fails.
     /// - [`Error::Axioms`] when the task has derived variables.
     /// - [`Error::TooManyBits`] when the encoding exceeds `u32::MAX` diagram variables.
-    /// - [`Error::OutOfMemory`] when the diagrams do not fit into `capacity`.
-    pub(crate) fn new(task: &Task, capacity: Capacity) -> Result<Self, Error> {
+    /// - [`Error::OutOfMemory`] when the diagrams do not fit into the
+    ///   configured capacity.
+    pub(crate) fn new(task: &Task, config: &Config) -> Result<Self, Error> {
         task.validate().map_err(Error::InvalidTask)?;
         if !task.axioms.is_empty() || task.variables.iter().any(sas_plus::Variable::is_derived) {
             return Err(Error::Axioms);
         }
 
-        let encoding = Encoding::new(task).ok_or(Error::TooManyBits)?;
+        let encoding = Encoding::new(task, config.variable_order).ok_or(Error::TooManyBits)?;
+        let capacity = Capacity {
+            nodes: config.node_capacity,
+            cache: config.cache_capacity,
+        };
         let backend = B::new(encoding.num_diagram_vars(), capacity)?;
 
-        let relations = task
+        let operators = task
             .operators
             .iter()
-            .enumerate()
-            .map(|(op, operator)| OperatorRelation::new(&backend, &encoding, op, operator))
+            .map(|operator| Relation::new(&backend, &encoding, operator))
             .collect::<BackendResult<Vec<_>>>()?;
+        let groups = relation::partition(&backend, &encoding, &operators, config.merge_node_limit)?;
         let initial = encoding.state(&backend, &task.initial)?;
         let goal = backend.and(
             &encoding.facts(&backend, &task.goal)?,
             &encoding.all_valid(&backend)?,
         )?;
+        let mut goal_vars: Vec<_> = task.goal.iter().map(|fact| fact.var).collect();
+        goal_vars.sort_unstable();
+        goal_vars.dedup();
 
         Ok(Self {
             backend,
             encoding,
-            relations,
-            initial,
-            goal,
+            operators,
+            concrete: Space {
+                groups,
+                initial,
+                goal,
+            },
+            goal_vars,
         })
+    }
+
+    /// The diagram manager.
+    pub(crate) fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// The concrete state space.
+    pub(crate) fn concrete(&self) -> &Space<B> {
+        &self.concrete
+    }
+
+    /// Number of SAS+ variables.
+    pub(crate) fn num_vars(&self) -> usize {
+        self.encoding.num_vars()
+    }
+
+    /// The states that satisfy all `facts`, checked against the domains.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidFact`] for a fact with an unknown variable or a
+    ///   value outside its domain.
+    /// - [`Error::OutOfMemory`] when the node table fills up.
+    pub(crate) fn facts(&self, facts: &[sas_plus::Fact]) -> Result<B::Set, Error> {
+        if let Some(&fact) = facts.iter().find(|f| !self.encoding.holds_value(**f)) {
+            return Err(Error::InvalidFact(fact));
+        }
+
+        Ok(self.encoding.facts(&self.backend, facts)?)
     }
 
     /// Unit-cost breadth-first search in `direction`, then plan extraction.
@@ -105,20 +178,17 @@ impl<B: Backend> Model<B> {
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
     pub(crate) fn bfs(&self, direction: Direction) -> Result<Option<Vec<OpId>>, Error> {
-        let (start, target) = match direction {
-            Direction::Forward => (&self.initial, &self.goal),
-            Direction::Backward => (&self.goal, &self.initial),
-        };
+        let (start, target) = (
+            self.concrete.start(direction),
+            self.concrete.start(direction.reverse()),
+        );
         let Some(found) = self.explore(start, target, direction)? else {
             return Ok(None);
         };
 
-        let mut plan = self.trace(&found, direction.reverse())?;
-        if direction == Direction::Forward {
-            plan.reverse();
-        }
+        let plan = self.trace(&found, direction.reverse())?;
 
-        Ok(Some(plan))
+        Ok(Some(orient(plan, direction)))
     }
 
     /// Expands layers from `start` until one meets `target` or no new state
@@ -153,35 +223,20 @@ impl<B: Backend> Model<B> {
         }
     }
 
-    /// One step from `states` in `direction`, over all operators.
+    /// One step from `states` in `direction`, over all relation groups and
+    /// ignoring costs.
     ///
     /// # Errors
     ///
     /// Out of memory in the backend.
     fn successors(&self, states: &B::Set, direction: Direction) -> BackendResult<B::Set> {
-        self.relations
+        self.concrete
+            .groups
             .iter()
-            .try_fold(self.backend.constant(false), |acc, relation| {
+            .try_fold(self.backend.constant(false), |acc, group| {
                 self.backend
-                    .or(&acc, &self.step(relation, states, direction)?)
+                    .or(&acc, &group.step(&self.backend, states, direction)?)
             })
-    }
-
-    /// One step of `relation` from `states` in `direction`.
-    ///
-    /// # Errors
-    ///
-    /// Out of memory in the backend.
-    fn step(
-        &self,
-        relation: &OperatorRelation<B>,
-        states: &B::Set,
-        direction: Direction,
-    ) -> BackendResult<B::Set> {
-        match direction {
-            Direction::Forward => relation.image(&self.backend, states),
-            Direction::Backward => relation.preimage(&self.backend, states),
-        }
     }
 
     /// Walks from one state of `found.hit` back through the layers, stepping
@@ -219,16 +274,94 @@ impl<B: Backend> Model<B> {
         layer: &B::Set,
         walk: Direction,
     ) -> BackendResult<(OpId, B::Set)> {
-        for relation in &self.relations {
+        for (op, relation) in self.operators.iter().enumerate() {
             let reached = self
                 .backend
-                .and(&self.step(relation, state, walk)?, layer)?;
+                .and(&relation.step(&self.backend, state, walk)?, layer)?;
             if !self.backend.is_empty(&reached) {
-                return Ok((relation.op, self.pick_state(&reached)?));
+                return Ok((op, self.pick_state(&reached)?));
             }
         }
 
         panic!("a BFS layer state has no neighbour in the previous layer");
+    }
+
+    /// Walks from `state`, found at cost `g` by `frontier`, back to its start
+    /// and returns the operators in walk order (see
+    /// [`orient`] for execution order).
+    ///
+    /// `state` must be a singleton that is either closed by `frontier` at
+    /// cost `g`, or was generated at cost `g` by an expansion of it.
+    ///
+    /// # Errors
+    ///
+    /// Out of memory in the backend.
+    pub(crate) fn trace_frontier(
+        &self,
+        frontier: &Frontier<'_, B>,
+        state: B::Set,
+        g: u64,
+    ) -> BackendResult<Vec<OpId>> {
+        let b = &self.backend;
+        let (mut state, mut g, mut before) = (state, g, frontier.entries().len());
+        let mut ops = Vec::new();
+        while g > 0 || b.is_empty(&b.and(&state, frontier.start())?) {
+            let step = self.step_back(frontier, &state, g, before)?;
+            ops.push(step.op);
+            (state, g, before) = (step.state, step.g, step.entry);
+        }
+
+        Ok(ops)
+    }
+
+    /// Finds an operator `o` and a closed entry before index `before` with
+    /// cost `g − cost(o)` that `o` connects to the singleton `state` in the
+    /// frontier's direction.
+    ///
+    /// # Errors
+    ///
+    /// Out of memory in the backend.
+    ///
+    /// # Panics
+    ///
+    /// When no such entry exists; the frontier invariant rules this out.
+    fn step_back(
+        &self,
+        frontier: &Frontier<'_, B>,
+        state: &B::Set,
+        g: u64,
+        before: usize,
+    ) -> BackendResult<BackStep<B::Set>> {
+        let b = &self.backend;
+        let walk = frontier.direction().reverse();
+        for (op, relation) in self.operators.iter().enumerate() {
+            let Some(target) = g.checked_sub(relation.cost) else {
+                continue;
+            };
+            let neighbours = relation.step(b, state, walk)?;
+            if b.is_empty(&neighbours) {
+                continue;
+            }
+
+            for (entry, (entry_g, layer)) in frontier.entries()[..before].iter().enumerate().rev() {
+                if *entry_g != target {
+                    continue;
+                }
+
+                let reached = b.and(&neighbours, layer)?;
+                if !b.is_empty(&reached) {
+                    let state = self.pick_state(&reached)?;
+                    return Ok(BackStep {
+                        op,
+                        state,
+                        g: target,
+                        entry,
+                    });
+                }
+            }
+        }
+
+        panic!("a closed state has no predecessor in an earlier layer");
     }
 
     /// The singleton set of one state of the non-empty set `states`.
@@ -240,7 +373,7 @@ impl<B: Backend> Model<B> {
     /// # Panics
     ///
     /// When `states` is empty.
-    fn pick_state(&self, states: &B::Set) -> BackendResult<B::Set> {
+    pub(crate) fn pick_state(&self, states: &B::Set) -> BackendResult<B::Set> {
         let assignment = self
             .backend
             .pick(states)
@@ -251,12 +384,31 @@ impl<B: Backend> Model<B> {
     }
 }
 
+/// Puts a plan traced in the walk direction of a `direction` search into
+/// execution order: a forward search is traced backwards from the goal.
+fn orient(mut plan: Vec<OpId>, direction: Direction) -> Vec<OpId> {
+    if direction == Direction::Forward {
+        plan.reverse();
+    }
+
+    plan
+}
+
 #[cfg(test)]
 mod tests {
     use sas_plus::{Effect, Fact, Operator, State, Variable};
 
     use super::*;
     use crate::backend::bcdd::Oxidd;
+
+    /// Tiny limits for unit tests.
+    pub(crate) fn tiny_config() -> Config {
+        Config {
+            node_capacity: 1 << 12,
+            cache_capacity: 1 << 8,
+            ..Config::default()
+        }
+    }
 
     /// Backward search through an unconditional effect frees the variable's
     /// bits; the relation must still keep the preimage inside valid codes.
@@ -274,15 +426,15 @@ mod tests {
             goal: vec![Fact::new(0, 2)],
             axioms: vec![],
         };
-        let capacity = Capacity {
-            nodes: 1 << 10,
-            cache: 1 << 8,
-        };
-        let model = Model::<Oxidd>::new(&task, capacity).unwrap();
+        let model = Model::<Oxidd>::new(&task, &tiny_config()).unwrap();
         let b = &model.backend;
 
         let found = model
-            .explore(&model.goal, &model.initial, Direction::Backward)
+            .explore(
+                &model.concrete.goal,
+                &model.concrete.initial,
+                Direction::Backward,
+            )
             .unwrap()
             .expect("the initial state reaches the goal");
         let invalid = b.not(&model.encoding.all_valid(b).unwrap()).unwrap();
@@ -290,5 +442,60 @@ mod tests {
         for layer in &found.layers {
             assert!(b.is_empty(&b.and(layer, &invalid).unwrap()));
         }
+    }
+
+    /// A random task with conditional effects, a fixed seed.
+    fn random(seed: u64) -> Task {
+        let params = sas_plus::random::RandomTaskParams {
+            max_domain: 5,
+            max_conditions: 2,
+            ..sas_plus::random::RandomTaskParams::default()
+        };
+
+        sas_plus::random::random_task(seed, params)
+    }
+
+    /// Merged groups step exactly like the union of their operators, both
+    /// ways, from the set of all valid states.
+    #[test]
+    fn merged_groups_equal_operator_union() {
+        for seed in 0..16 {
+            let config = Config {
+                merge_node_limit: usize::MAX,
+                ..tiny_config()
+            };
+            let model = Model::<Oxidd>::new(&random(seed), &config).unwrap();
+            let b = &model.backend;
+            let all = model.encoding.all_valid(b).unwrap();
+            assert!(model.concrete.groups.len() < model.operators.len());
+
+            for direction in [Direction::Forward, Direction::Backward] {
+                let union = model.operators.iter().fold(b.constant(false), |acc, op| {
+                    b.or(&acc, &op.step(b, &all, direction).unwrap()).unwrap()
+                });
+
+                assert!(model.successors(&all, direction).unwrap() == union);
+            }
+        }
+    }
+
+    /// With a node limit of 1, `SymBA*` installs abstraction heuristics and
+    /// still finds a plan.
+    #[test]
+    fn symba_installs_abstractions() {
+        let mut installed = 0;
+        for seed in 0..16 {
+            let task = random(seed);
+            let model = Model::<Oxidd>::new(&task, &tiny_config()).unwrap();
+
+            let (plan, count) = model.symba(1).unwrap();
+
+            installed += count;
+            if let Some(plan) = plan {
+                assert!(task.validate_plan(&plan).is_some());
+            }
+        }
+
+        assert!(installed > 0);
     }
 }

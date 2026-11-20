@@ -7,7 +7,7 @@ use symbolic_search::{Error, SymbolicTask};
 use crate::{SMALL, check_against_oracle};
 
 /// Parses `tests/fixtures/<name>/output.sas` into a task.
-fn fixture(name: &str) -> Task {
+pub fn fixture(name: &str) -> Task {
     let path = format!(
         "{}/tests/fixtures/{name}/output.sas",
         env!("CARGO_MANIFEST_DIR")

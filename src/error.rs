@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use sas_plus::TaskError;
+use sas_plus::{Fact, TaskError, VarId};
 
 use crate::backend::OutOfMemory;
 
@@ -21,6 +21,14 @@ pub enum Error {
     /// The decision-diagram node table or cache is full, even after garbage
     /// collection. Raise [`crate::Config::node_capacity`].
     OutOfMemory,
+    /// A pattern names a variable the task does not have.
+    UnknownVariable(VarId),
+    /// A fact names a variable the task does not have, or a value outside
+    /// that variable's domain.
+    InvalidFact(Fact),
+    /// A [`crate::Heuristic`] was used with a task other than the one that
+    /// built it.
+    ForeignHeuristic,
 }
 
 impl fmt::Display for Error {
@@ -30,6 +38,11 @@ impl fmt::Display for Error {
             Self::Axioms => write!(f, "axioms and derived variables are not supported"),
             Self::TooManyBits => write!(f, "the task needs too many decision-diagram variables"),
             Self::OutOfMemory => write!(f, "the decision-diagram node table is full"),
+            Self::UnknownVariable(var) => write!(f, "unknown variable {var} in a pattern"),
+            Self::InvalidFact(fact) => {
+                write!(f, "invalid fact: variable {} = {}", fact.var, fact.value)
+            }
+            Self::ForeignHeuristic => write!(f, "the heuristic belongs to another symbolic task"),
         }
     }
 }

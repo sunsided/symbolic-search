@@ -8,8 +8,8 @@
 use oxidd::bcdd::{BCDDFunction, BCDDManagerRef};
 use oxidd::util::{AllocResult, OptBool};
 use oxidd::{
-    BooleanFunction, BooleanFunctionQuant, BooleanOperator, FunctionSubst, Manager, ManagerRef,
-    Subst,
+    BooleanFunction, BooleanFunctionQuant, BooleanOperator, Function, FunctionSubst, Manager,
+    ManagerRef, Subst,
 };
 
 use super::{Backend, BackendResult, Capacity, OutOfMemory};
@@ -95,6 +95,10 @@ impl Backend for Oxidd {
         checked(a.apply_exists(BooleanOperator::And, b, vars))
     }
 
+    fn exists(&self, a: &Self::Set, vars: &Self::VarSet) -> BackendResult<Self::Set> {
+        checked(a.exists(vars))
+    }
+
     fn renaming(&self, from: &[u32], to: &[u32]) -> Self::Renaming {
         assert_eq!(from.len(), to.len(), "renaming needs one target per source");
         Subst::new(from.to_vec(), to.iter().map(|&v| self.var(v)).collect())
@@ -106,6 +110,10 @@ impl Backend for Oxidd {
 
     fn is_empty(&self, a: &Self::Set) -> bool {
         !a.satisfiable()
+    }
+
+    fn node_count(&self, a: &Self::Set) -> usize {
+        a.node_count()
     }
 
     fn pick(&self, a: &Self::Set) -> Option<Vec<bool>> {
@@ -151,6 +159,19 @@ mod tests {
 
         assert_eq!(b.pick(&set), Some(vec![false, false, true, false]));
         assert_eq!(b.pick(&b.constant(false)), None);
+    }
+
+    /// Quantifying `x` out of `x ∧ y` leaves `y`, a smaller diagram.
+    #[test]
+    fn exists_forgets_variables() {
+        let b = Oxidd::new(4, SMALL).unwrap();
+        let (x, y) = (b.var(0), b.var(2));
+        let both = b.and(&x, &y).unwrap();
+
+        let forgotten = b.exists(&both, &b.var_set(&[0]).unwrap()).unwrap();
+
+        assert!(forgotten == y);
+        assert!(b.node_count(&both) > b.node_count(&forgotten));
     }
 
     /// A node table that is too small reports out-of-memory.

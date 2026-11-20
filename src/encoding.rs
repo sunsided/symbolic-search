@@ -10,10 +10,13 @@
 //! bit:    v0.b0  v0.b0' v0.b1  v0.b1' v1.b0  v1.b0' ...
 //! ```
 //!
-//! SAS+ variables keep the task's order. Codes `≥ d` are invalid; every set
+//! SAS+ variables follow the order given to [`Encoding::new`] (see
+//! [`crate::order`]); the bits of one variable stay contiguous. Codes `≥ d` are invalid; every set
 //! the search builds stays inside the valid codes (see [`Encoding::valid`]).
 
 use sas_plus::{Fact, State, Task, Value, VarId};
+
+use crate::order::VariableOrder;
 
 use crate::backend::{Backend, BackendResult};
 
@@ -53,22 +56,29 @@ fn bit_width(domain: u32) -> u32 {
 }
 
 impl Encoding {
-    /// Lays out the bits of every variable of `task`, in task order.
+    /// Lays out the bits of every variable of `task`, in the diagram order
+    /// chosen by `order`.
     ///
     /// Returns `None` when the diagram would need more than `u32::MAX`
     /// variables.
-    pub(crate) fn new(task: &Task) -> Option<Self> {
-        let mut vars = Vec::with_capacity(task.variables.len());
+    pub(crate) fn new(task: &Task, order: VariableOrder) -> Option<Self> {
+        let mut vars: Vec<Bits> = task
+            .variables
+            .iter()
+            .map(|var| {
+                let domain = var.domain_size.max(1);
+                Bits {
+                    first: 0,
+                    width: bit_width(domain),
+                    domain,
+                }
+            })
+            .collect();
+
         let mut num_bits: u32 = 0;
-        for var in &task.variables {
-            let domain = var.domain_size.max(1);
-            let width = bit_width(domain);
-            vars.push(Bits {
-                first: num_bits,
-                width,
-                domain,
-            });
-            num_bits = num_bits.checked_add(width)?;
+        for var in crate::order::order(task, order) {
+            vars[var].first = num_bits;
+            num_bits = num_bits.checked_add(vars[var].width)?;
         }
 
         num_bits.checked_mul(2)?;
@@ -76,9 +86,21 @@ impl Encoding {
         Some(Self { vars, num_bits })
     }
 
+    /// Number of SAS+ variables.
+    pub(crate) fn num_vars(&self) -> usize {
+        self.vars.len()
+    }
+
     /// Number of diagram variables: a current and a next copy per bit.
     pub(crate) fn num_diagram_vars(&self) -> u32 {
         self.num_bits * 2
+    }
+
+    /// Whether `fact` names a variable of the task and a value in its domain.
+    pub(crate) fn holds_value(&self, fact: Fact) -> bool {
+        self.vars
+            .get(fact.var)
+            .is_some_and(|bits| fact.value < bits.domain)
     }
 
     /// Diagram variables of `var` in `frame`, most significant bit first.

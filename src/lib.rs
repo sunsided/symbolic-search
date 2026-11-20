@@ -42,6 +42,7 @@
 //! let config = Config {
 //!     node_capacity: 1 << 10,
 //!     cache_capacity: 1 << 8,
+//!     ..Config::default()
 //! };
 //! let symbolic = SymbolicTask::new(&task, config)?;
 //! let plan = symbolic.forward_bfs()?.expect("the goal is reachable");
@@ -59,8 +60,10 @@ mod backend;
 mod encoding;
 mod error;
 mod model;
+mod order;
 mod relation;
 mod search;
 
 pub use error::Error;
-pub use search::{Config, SymbolicTask};
+pub use order::VariableOrder;
+pub use search::{Config, Heuristic, SymbolicTask};
