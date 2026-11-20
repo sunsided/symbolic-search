@@ -363,13 +363,19 @@ Costs of the choice:
 Features are trimmed to `manager-index`, `bcdd` and
 `apply-cache-direct-mapped`. Multi-threaded apply is a later experiment.
 
-**The seam.** `backend::Backend` (crate-private) has associated types `Set`,
+**The seam.** `backend::Backend` (public) has associated types `Set`,
 `VarSet` (prebuilt quantification set) and `Renaming` (prebuilt renaming),
 and only the operations the crate calls: constants, literals, `not`, `and`,
-`or`, `ite`, `and_exists`, `rename`, emptiness and `pick`. Every operation
-that allocates returns `Result<_, OutOfMemory>`. No oxidd type appears in a
-public signature or error. Swapping the backend means one new module, plus
-a type parameter or a feature on `SymbolicTask`.
+`or`, `ite`, `and_exists`, `exists`, `rename`, emptiness, node counts and
+`pick`. Every operation that allocates returns `Result<_, OutOfMemory>`.
+`SymbolicTask<B = Oxidd>` and `Heuristic<B = Oxidd>` take the backend as a
+type parameter; `SymbolicTask::new` stays on the default backend (so type
+inference needs no annotation), and `SymbolicTask::<B>::with_backend`
+compiles on any other. The only oxidd type in a public signature is the
+`backend::Oxidd` wrapper itself; its fields stay private. Making the trait
+public cost no restructuring: the model and searches were generic already.
+It exposes the trait as an extension point, so new required methods are
+breaking changes once outside implementations exist.
 
 The 0.0.0 placeholder trait `SymbolicTransitions` (infallible `image`,
 `preimage`) was dropped. Its infallible signatures cannot report a full

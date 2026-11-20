@@ -435,7 +435,7 @@ mod tests {
 
     use super::*;
     use crate::Config;
-    use crate::backend::bcdd::Oxidd;
+    use crate::backend::Oxidd;
 
     /// Tiny tables and a random task with conditional effects.
     fn model(seed: u64) -> (sas_plus::Task, Model<Oxidd>) {

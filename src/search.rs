@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use sas_plus::{Fact, OpId, State, Task, VarId};
 
 use crate::Error;
-use crate::backend::bcdd::Oxidd;
+use crate::backend::{Backend, Oxidd};
 use crate::model::frontier::Strategy;
 use crate::model::heuristic::Partition;
 use crate::model::{Direction, Model};
@@ -301,7 +301,10 @@ fn grow(config: Config) -> Option<Config> {
 /// # Errors
 ///
 /// The errors of [`SymbolicTask::new`].
-fn compile_growing(task: &Task, mut config: Config) -> Result<(Config, Model<Oxidd>), Error> {
+fn compile_growing<B: Backend>(
+    task: &Task,
+    mut config: Config,
+) -> Result<(Config, Model<B>), Error> {
     loop {
         match Model::new(task, &config) {
             Err(Error::OutOfMemory) => config = grow(config).ok_or(Error::OutOfMemory)?,
@@ -328,10 +331,10 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 /// | [`astar`](Self::astar) (`BDDA*`) | used | cheapest for an admissible heuristic |
 /// | [`greedy`](Self::greedy) (GBFS) | used for tie breaking | any |
 /// | [`symba`](Self::symba), [`symba_with`](Self::symba_with) (`SymBA*`) | used | cheapest (or [`Error::BudgetExhausted`]) |
-pub struct SymbolicTask {
-    /// The compiled model on the default backend, in the manager that
+pub struct SymbolicTask<B: Backend = Oxidd> {
+    /// The compiled model on backend `B`, in the manager that
     /// [`Heuristic`]s of this task live in.
-    model: Model<Oxidd>,
+    model: Model<B>,
     /// Unique id; [`Heuristic`]s remember it.
     id: u64,
     /// The task, kept for recompiling with a larger manager.
@@ -340,15 +343,15 @@ pub struct SymbolicTask {
     config: Config,
     /// The largest model an out-of-memory retry built so far; searches
     /// without heuristics start there.
-    grown: Mutex<Option<Arc<Grown>>>,
+    grown: Mutex<Option<Arc<Grown<B>>>>,
 }
 
 /// A model compiled again with a larger manager after running out of nodes.
-struct Grown {
+struct Grown<B: Backend> {
     /// Its configuration.
     config: Config,
     /// The model.
-    model: Model<Oxidd>,
+    model: Model<B>,
 }
 
 /// A heuristic for [`SymbolicTask::astar`] and [`SymbolicTask::greedy`],
@@ -356,15 +359,16 @@ struct Grown {
 ///
 /// Built by [`SymbolicTask::pdb`] or [`SymbolicTask::heuristic`], and only
 /// usable with the task that built it.
-pub struct Heuristic {
+pub struct Heuristic<B: Backend = Oxidd> {
     /// The partition, in the manager of the task with id `task`.
-    partition: Partition<Oxidd>,
+    partition: Partition<B>,
     /// Id of the [`SymbolicTask`] that built this heuristic.
     task: u64,
 }
 
-impl SymbolicTask {
-    /// Compiles `task` into decision diagrams within the limits of `config`.
+impl SymbolicTask<Oxidd> {
+    /// Compiles `task` into decision diagrams on the default backend
+    /// ([`Oxidd`]) within the limits of `config`.
     ///
     /// # Errors
     ///
@@ -375,6 +379,46 @@ impl SymbolicTask {
     /// - [`Error::OutOfMemory`] when the relations do not fit into
     ///   [`Config::node_capacity`].
     pub fn new(task: &Task, config: Config) -> Result<Self, Error> {
+        Self::with_backend(task, config)
+    }
+}
+
+impl<B: Backend> SymbolicTask<B> {
+    /// Compiles `task` into decision diagrams on backend `B`; see
+    /// [`SymbolicTask::new`] for the default backend.
+    ///
+    /// # Errors
+    ///
+    /// As [`SymbolicTask::new`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+    /// use symbolic_search::backend::{Backend, Oxidd};
+    /// use symbolic_search::{Config, Error, Solution, SymbolicTask};
+    ///
+    /// /// Works on any backend.
+    /// fn solve<B: Backend>(task: &Task) -> Result<Option<Solution>, Error> {
+    ///     SymbolicTask::<B>::with_backend(task, Config::for_task(task))?.bidirectional_dijkstra()
+    /// }
+    ///
+    /// let task = Task {
+    ///     variables: vec![Variable::new("x", 2)],
+    ///     operators: vec![Operator {
+    ///         name: "flip".into(),
+    ///         pre: vec![Fact::new(0, 0)],
+    ///         eff: vec![Effect::new(Fact::new(0, 1))],
+    ///         cost: 3,
+    ///     }],
+    ///     initial: State(vec![0]),
+    ///     goal: vec![Fact::new(0, 1)],
+    ///     axioms: vec![],
+    /// };
+    /// assert_eq!(solve::<Oxidd>(&task)?.map(|s| s.cost), Some(3));
+    /// # Ok::<(), Error>(())
+    /// ```
+    pub fn with_backend(task: &Task, config: Config) -> Result<Self, Error> {
         let (config, model) = compile_growing(task, config)?;
 
         Ok(Self {
@@ -401,7 +445,7 @@ impl SymbolicTask {
     /// # Errors
     ///
     /// Any error of `search`; [`Error::OutOfMemory`] only past the cap.
-    fn retrying<T>(&self, search: impl Fn(&Model<Oxidd>) -> Result<T, Error>) -> Result<T, Error> {
+    fn retrying<T>(&self, search: impl Fn(&Model<B>) -> Result<T, Error>) -> Result<T, Error> {
         let grown = self.grown_model();
         let (mut config, result) = match &grown {
             Some(g) => (g.config, search(&g.model)),
@@ -424,7 +468,7 @@ impl SymbolicTask {
     }
 
     /// The model of the last retry, if any.
-    fn grown_model(&self) -> Option<Arc<Grown>> {
+    fn grown_model(&self) -> Option<Arc<Grown<B>>> {
         self.grown
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -432,7 +476,7 @@ impl SymbolicTask {
     }
 
     /// Keeps `grown` for later searches when it is larger than the one kept.
-    fn remember(&self, grown: Grown) {
+    fn remember(&self, grown: Grown<B>) {
         let mut slot = self
             .grown
             .lock()
@@ -607,7 +651,7 @@ impl SymbolicTask {
     /// assert_eq!(solution.cost, 4);
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn astar(&self, heuristic: &Heuristic) -> Result<Option<Solution>, Error> {
+    pub fn astar(&self, heuristic: &Heuristic<B>) -> Result<Option<Solution>, Error> {
         let partition = self.own(heuristic)?;
 
         self.model
@@ -655,7 +699,7 @@ impl SymbolicTask {
     /// assert_eq!(solution.cost, 5);
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn greedy(&self, heuristic: &Heuristic) -> Result<Option<Solution>, Error> {
+    pub fn greedy(&self, heuristic: &Heuristic<B>) -> Result<Option<Solution>, Error> {
         let partition = self.own(heuristic)?;
 
         self.model
@@ -783,7 +827,7 @@ impl SymbolicTask {
     /// - [`Error::UnknownVariable`] when `pattern` names a variable the task
     ///   does not have.
     /// - [`Error::OutOfMemory`] when the node table fills up.
-    pub fn pdb(&self, pattern: &[VarId]) -> Result<Heuristic, Error> {
+    pub fn pdb(&self, pattern: &[VarId]) -> Result<Heuristic<B>, Error> {
         if let Some(&var) = pattern.iter().find(|&&v| v >= self.model.num_vars()) {
             return Err(Error::UnknownVariable(var));
         }
@@ -834,7 +878,7 @@ impl SymbolicTask {
     /// assert_eq!(symbolic.evaluate(&single, &task.initial)?, Some(2));
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn canonical_pdbs(&self, patterns: &[Vec<VarId>]) -> Result<Heuristic, Error> {
+    pub fn canonical_pdbs(&self, patterns: &[Vec<VarId>]) -> Result<Heuristic<B>, Error> {
         let num_vars = self.model.num_vars();
         if let Some(&var) = patterns.iter().flatten().find(|&&v| v >= num_vars) {
             return Err(Error::UnknownVariable(var));
@@ -857,7 +901,7 @@ impl SymbolicTask {
     /// - [`Error::InvalidFact`] when a fact names an unknown variable or a
     ///   value outside its domain.
     /// - [`Error::OutOfMemory`] when the node table fills up.
-    pub fn heuristic(&self, estimates: &[(Vec<Fact>, u64)]) -> Result<Heuristic, Error> {
+    pub fn heuristic(&self, estimates: &[(Vec<Fact>, u64)]) -> Result<Heuristic<B>, Error> {
         let pairs = estimates
             .iter()
             .map(|(facts, h)| Ok((*h, self.model.facts(facts)?)))
@@ -879,7 +923,7 @@ impl SymbolicTask {
     ///   the wrong number of variables (reported for the first offending
     ///   variable, or the first missing one).
     /// - [`Error::OutOfMemory`] when the node table fills up.
-    pub fn evaluate(&self, heuristic: &Heuristic, state: &State) -> Result<Option<u64>, Error> {
+    pub fn evaluate(&self, heuristic: &Heuristic<B>, state: &State) -> Result<Option<u64>, Error> {
         let partition = self.own(heuristic)?;
         if state.0.len() != self.model.num_vars() {
             return Err(Error::InvalidFact(Fact::new(state.0.len(), 0)));
@@ -902,7 +946,7 @@ impl SymbolicTask {
     /// # Errors
     ///
     /// [`Error::ForeignHeuristic`] when it was built by another task.
-    fn own(&self, heuristic: &Heuristic) -> Result<Partition<Oxidd>, Error> {
+    fn own(&self, heuristic: &Heuristic<B>) -> Result<Partition<B>, Error> {
         if heuristic.task != self.id {
             return Err(Error::ForeignHeuristic);
         }
@@ -911,7 +955,7 @@ impl SymbolicTask {
     }
 
     /// Wraps `partition` as a heuristic of this task.
-    fn wrap(&self, partition: Partition<Oxidd>) -> Heuristic {
+    fn wrap(&self, partition: Partition<B>) -> Heuristic<B> {
         Heuristic {
             partition,
             task: self.id,

@@ -24,7 +24,9 @@ Pre-release (0.0.0); the API will change.
     (`SymbaConfig`).
 
   All searches reconstruct plans. BDDs come from
-  [`oxidd`](https://crates.io/crates/oxidd) behind an internal backend trait.
+  [`oxidd`](https://crates.io/crates/oxidd) behind a public backend trait
+  (`backend::Backend`); `SymbolicTask::with_backend` takes any
+  implementation.
 - Not done: axioms (rejected with `Error::Axioms`), mutex pruning,
   full merge-and-shrink (merge strategies, bisimulation shrinking).
 

@@ -257,7 +257,7 @@ pub(crate) fn perimeter_of<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::bcdd::Oxidd;
+    use crate::backend::Oxidd;
     use crate::{AbstractionHierarchy, Config};
 
     /// Tiny tables and a random task with conditional effects and wide

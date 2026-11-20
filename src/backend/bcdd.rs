@@ -15,7 +15,7 @@ use oxidd::{
 use super::{Backend, BackendResult, Capacity, OutOfMemory};
 
 /// A BCDD manager plus the literal of every variable, created up front.
-pub(crate) struct Oxidd {
+pub struct Oxidd {
     /// The shared manager that owns all nodes of this search.
     manager: BCDDManagerRef,
     /// `literals[i]` is the positive literal of variable `i`.

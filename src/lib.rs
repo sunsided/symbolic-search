@@ -75,7 +75,7 @@
 //!
 //! Repository: <https://github.com/sunsided/symbolic-search>
 
-mod backend;
+pub mod backend;
 mod encoding;
 mod error;
 mod model;

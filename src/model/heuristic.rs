@@ -162,7 +162,7 @@ fn add<B: Backend>(
 mod tests {
     use super::*;
     use crate::backend::Capacity;
-    use crate::backend::bcdd::Oxidd;
+    use crate::backend::Oxidd;
 
     /// A two-variable manager for partition tests.
     fn manager() -> Oxidd {

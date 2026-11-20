@@ -417,7 +417,7 @@ mod tests {
 
     use super::*;
     use crate::SymbaConfig;
-    use crate::backend::bcdd::Oxidd;
+    use crate::backend::Oxidd;
 
     /// A set in the test backend.
     type BddSet = <Oxidd as Backend>::Set;
