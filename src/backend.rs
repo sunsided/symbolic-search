@@ -5,21 +5,30 @@
 //! the encoding, the transition relations or the search loops. The trait holds
 //! only the operations the crate calls; extend it when an algorithm needs more.
 //!
-//! The default (and so far only) implementation is [`Oxidd`], built on
-//! complement-edge BDDs from the `oxidd` crate. `docs/design.md` records why.
+//! Two implementations exist: [`Oxidd`] (the default), built on
+//! complement-edge BDDs from the `oxidd` crate (`docs/design.md` records
+//! why), and [`ReferenceBdd`], a small plain-Rust BDD that cross-checks it.
 //!
-//! The trait is public: [`crate::SymbolicTask::with_backend`] compiles a
-//! task on any implementation, and `SymbolicTask` and `Heuristic` take the
-//! backend as a type parameter that defaults to [`Oxidd`]. An
-//! implementation must keep the variable order fixed (variable 0 on top),
-//! give sets semantic equality, and report a full table as
-//! [`OutOfMemory`] instead of panicking. The trait may still grow: it is
-//! not sealed, but a new required method is a breaking change for outside
-//! implementations, which is acceptable before 1.0.
+//! The trait is public so code can be generic over the backend:
+//! [`crate::SymbolicTask::with_backend`] compiles a task on either, and
+//! `SymbolicTask` and `Heuristic` take the backend as a type parameter that
+//! defaults to [`Oxidd`]. It is sealed: an implementation must keep the
+//! variable order fixed (variable 0 on top), give sets semantic equality
+//! and report a full table as [`OutOfMemory`], none of which the type
+//! system checks, and the trait grows with every algorithm that needs a new
+//! operation. Sealing keeps both changes non-breaking.
 
 mod bcdd;
+mod reference;
 
 pub use bcdd::{Oxidd, OxiddRenaming, OxiddSet, OxiddVarSet};
+pub use reference::{ReferenceBdd, ReferenceRenaming, ReferenceSet, ReferenceVarSet};
+
+/// The seal of [`Backend`]: only this crate's backends implement it.
+pub(crate) mod sealed {
+    /// Implemented by every backend of this crate, and by nothing else.
+    pub trait Sealed {}
+}
 
 /// The diagram manager ran out of node or cache capacity.
 ///
@@ -46,7 +55,7 @@ pub struct Capacity {
 /// Variables are numbered `0..num_vars` and the variable order equals the
 /// numbering: variable 0 is the topmost level. Implementations must not
 /// reorder variables behind the caller's back.
-pub trait Backend: Sized {
+pub trait Backend: sealed::Sealed + Sized {
     /// A Boolean function, read as the set of its satisfying assignments.
     ///
     /// Equality must be semantic: two handles compare equal exactly when they
@@ -162,4 +171,109 @@ pub trait Backend: Sized {
     /// when `a` is empty. Variables the diagram leaves open are set to
     /// `false`; the result is still a member of `a`.
     fn pick(&self, a: &Self::Set) -> Option<Vec<bool>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Variables of the cross-check functions.
+    const VARS: u32 = 5;
+
+    /// The truth table of `f` over [`VARS`] variables, by intersecting it
+    /// with every minterm: needs only trait operations.
+    fn truth_table<B: Backend>(b: &B, f: &B::Set) -> Vec<bool> {
+        (0..1_u32 << VARS)
+            .map(|bits| {
+                let minterm = (0..VARS).fold(b.constant(true), |acc, v| {
+                    let literal = if bits >> v & 1 == 1 {
+                        b.var(v)
+                    } else {
+                        b.not(&b.var(v)).unwrap()
+                    };
+                    b.and(&acc, &literal).unwrap()
+                });
+                !b.is_empty(&b.and(f, &minterm).unwrap())
+            })
+            .collect()
+    }
+
+    /// A pseudo-random function built from every trait operation, steered
+    /// by `seed`; the same seed gives the same function on every backend.
+    fn random_function<B: Backend>(b: &B, seed: u64) -> B::Set {
+        let mut state = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 33
+        };
+        let pick_var = |n: u64| u32::try_from(n % u64::from(VARS)).unwrap();
+        let mut pool: Vec<B::Set> = (0..VARS).map(|v| b.var(v)).collect();
+        for _ in 0..12 {
+            let len = u64::try_from(pool.len()).unwrap();
+            let first = pool[usize::try_from(next() % len).unwrap()].clone();
+            let second = pool[usize::try_from(next() % len).unwrap()].clone();
+            let third = pool[usize::try_from(next() % len).unwrap()].clone();
+            let made = match next() % 7 {
+                0 => b.not(&first),
+                1 => b.and(&first, &second),
+                2 => b.or(&first, &second),
+                3 => b.ite(&first, &second, &third),
+                4 => b.exists(&first, &b.var_set(&[pick_var(next())]).unwrap()),
+                5 => b.and_exists(
+                    &first,
+                    &second,
+                    &b.var_set(&[pick_var(next()), pick_var(next())]).unwrap(),
+                ),
+                _ => {
+                    // Rename one variable to one the function does not use.
+                    let from = pick_var(next());
+                    let to = (from + 1) % VARS;
+                    let unused = b.exists(&first, &b.var_set(&[to]).unwrap()).unwrap();
+                    b.rename(&unused, &b.renaming(&[from], &[to]))
+                }
+            };
+            pool.push(made.unwrap());
+        }
+
+        pool.pop().unwrap()
+    }
+
+    /// Both backends compute the same functions, and `pick` returns a
+    /// member on both.
+    #[test]
+    fn reference_bdd_agrees_with_oxidd() {
+        let capacity = Capacity {
+            nodes: 1 << 12,
+            cache: 1 << 8,
+        };
+        let oxidd = Oxidd::new(VARS, capacity).unwrap();
+        let reference = ReferenceBdd::new(VARS, capacity).unwrap();
+        for seed in 0..200 {
+            let f = random_function(&oxidd, seed);
+            let g = random_function(&reference, seed);
+            assert_eq!(
+                truth_table(&oxidd, &f),
+                truth_table(&reference, &g),
+                "seed {seed}"
+            );
+            assert_eq!(oxidd.is_empty(&f), reference.is_empty(&g));
+
+            if let Some(assignment) = reference.pick(&g) {
+                let bits = (0..VARS)
+                    .filter(|&v| assignment[v as usize])
+                    .fold(0, |acc, v| acc | 1 << v);
+                assert!(truth_table(&reference, &g)[bits], "seed {seed}");
+            }
+        }
+    }
+
+    /// The reference backend reports a full table instead of panicking.
+    #[test]
+    fn reference_bdd_runs_out_of_memory() {
+        let tiny = Capacity { nodes: 4, cache: 4 };
+
+        assert!(ReferenceBdd::new(VARS, tiny).is_err());
+    }
 }

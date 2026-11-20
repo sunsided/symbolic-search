@@ -1,6 +1,7 @@
 //! Integration tests: symbolic searches against explicit-state BFS and
 //! Dijkstra oracles, with every plan checked by `Task::validate_plan`.
 
+mod backends;
 mod capacity;
 mod costs;
 mod fixtures;

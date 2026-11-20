@@ -30,8 +30,8 @@ Pre-release (0.0.0); the API will change.
   Conjunctive clusters use a greedy or the IWLS95 schedule.
   All searches reconstruct plans. BDDs come from
   [`oxidd`](https://crates.io/crates/oxidd) behind a public backend trait
-  (`backend::Backend`); `SymbolicTask::with_backend` takes any
-  implementation.
+  (`backend::Backend`, sealed); `SymbolicTask::with_backend` also runs on
+  `backend::ReferenceBdd`, a plain-Rust BDD that cross-checks oxidd.
 - Not done: axioms (rejected with `Error::Axioms`), mutex pruning,
   full merge-and-shrink (merge strategies, bisimulation shrinking).
 

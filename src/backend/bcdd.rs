@@ -40,6 +40,8 @@ fn checked(result: AllocResult<BCDDFunction>) -> BackendResult<OxiddSet> {
     result.map(OxiddSet).map_err(|_| OutOfMemory)
 }
 
+impl super::sealed::Sealed for Oxidd {}
+
 impl Backend for Oxidd {
     type Set = OxiddSet;
     type VarSet = OxiddVarSet;

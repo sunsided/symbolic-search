@@ -385,8 +385,14 @@ compiles on any other. No oxidd type appears in a public signature:
 `Oxidd`'s associated types are the opaque newtypes `OxiddSet`,
 `OxiddVarSet` and `OxiddRenaming`, so oxidd stays a private dependency. Making the trait
 public cost no restructuring: the model and searches were generic already.
-It exposes the trait as an extension point, so new required methods are
-breaking changes once outside implementations exist.
+A second backend, `backend::ReferenceBdd` (a plain-Rust reduced ordered
+BDD with hash-consing, an `ite` computed table and no garbage
+collection), exercises the seam: unit tests compare 200 random functions
+built from every trait operation against oxidd by truth table, and an
+integration sweep runs BFS, Dijkstra in all directions, SymBA\* and
+BDDA\* with a PDB on both backends and the oracles. The trait is sealed:
+its contract (fixed order, semantic equality, out-of-memory instead of
+panics) is not checked by types, and it grows with the algorithms.
 
 The 0.0.0 placeholder trait `SymbolicTransitions` (infallible `image`,
 `preimage`) was dropped. Its infallible signatures cannot report a full
