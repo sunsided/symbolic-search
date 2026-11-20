@@ -2,12 +2,13 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use sas_plus::{Fact, OpId, State, Task, VarId};
 
 use crate::Error;
 use crate::backend::bcdd::Oxidd;
-use crate::model::frontier::{Frontier, Strategy};
+use crate::model::frontier::Strategy;
 use crate::model::heuristic::Partition;
 use crate::model::{Direction, Model};
 use crate::order::VariableOrder;
@@ -28,10 +29,19 @@ use crate::order::VariableOrder;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     /// Maximum number of live BDD nodes. The node table is reserved at this
-    /// size when the task is compiled and never grows; searches that need
-    /// more nodes fail with [`Error::OutOfMemory`]. A node takes about 16
-    /// bytes plus its unique-table slot.
+    /// size when the task is compiled and never grows. A node takes about 16
+    /// bytes plus its unique-table slot. See
+    /// [`Config::max_node_capacity`] for what happens when it is too small.
     pub node_capacity: usize,
+    /// Largest node table an automatic retry may use. When compiling, or a
+    /// search without a [`Heuristic`] argument, runs out of nodes, the task
+    /// is compiled again with twice the node and cache capacity, up to this
+    /// many nodes, and the search reruns on the larger manager (which later
+    /// searches reuse). Only past this cap do they fail with
+    /// [`Error::OutOfMemory`]. Set it to [`Config::node_capacity`] or below
+    /// to turn retries off. Searches that take a [`Heuristic`] never retry,
+    /// because the heuristic's BDDs live in the original manager.
+    pub max_node_capacity: usize,
     /// Number of entries of the operation cache. Larger caches avoid
     /// recomputation at the price of memory (a few dozen bytes per entry).
     pub cache_capacity: usize,
@@ -44,6 +54,75 @@ pub struct Config {
     pub variable_order: VariableOrder,
     /// How transition relations are split for search steps.
     pub partitioning: Partitioning,
+}
+
+impl Config {
+    /// Capacities sized for `task`, everything else as in
+    /// [`Config::default`].
+    ///
+    /// The node table gets `2⁹ · bits + 2⁶ · bits · operators` nodes,
+    /// rounded up to a power of two and clamped to `2¹²..=2²²`, where
+    /// `bits` is the number of state bits; the cache gets a quarter of
+    /// that. Relations grow with bits per operator, and search sets with the
+    /// number of bits. The estimate is a starting point:
+    /// [`Config::max_node_capacity`] (16 times the estimate, at least 2²³)
+    /// covers tasks that need more.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+    /// use symbolic_search::{Config, SymbolicTask};
+    ///
+    /// let task = Task {
+    ///     variables: vec![Variable::new("x", 4)],
+    ///     operators: vec![Operator {
+    ///         name: "set".into(),
+    ///         pre: vec![],
+    ///         eff: vec![Effect::new(Fact::new(0, 3))],
+    ///         cost: 1,
+    ///     }],
+    ///     initial: State(vec![0]),
+    ///     goal: vec![Fact::new(0, 3)],
+    ///     axioms: vec![],
+    /// };
+    /// let config = Config::for_task(&task);
+    /// assert_eq!(config.node_capacity, 1 << 12);
+    ///
+    /// let solution = SymbolicTask::new(&task, config)?.forward_bfs()?;
+    /// assert_eq!(solution.map(|s| s.plan), Some(vec![0]));
+    /// # Ok::<(), symbolic_search::Error>(())
+    /// ```
+    #[must_use]
+    pub fn for_task(task: &Task) -> Self {
+        let bits: usize = task
+            .variables
+            .iter()
+            .map(|var| u32::BITS - var.domain_size.saturating_sub(1).leading_zeros())
+            .map(|width| usize::try_from(width).unwrap_or(usize::MAX))
+            .fold(0, usize::saturating_add);
+        let estimate = bits.saturating_mul(1 << 9).saturating_add(
+            bits.saturating_mul(task.operators.len())
+                .saturating_mul(1 << 6),
+        );
+        let nodes = estimate.clamp(1 << 12, 1 << 22).next_power_of_two();
+
+        Self {
+            node_capacity: nodes,
+            cache_capacity: nodes / 4,
+            max_node_capacity: nodes.saturating_mul(16).max(1 << 23),
+            ..Self::default()
+        }
+    }
+
+    /// `self` with node and cache capacity multiplied by `factor`.
+    fn scaled(self, factor: usize) -> Self {
+        Self {
+            node_capacity: self.node_capacity.saturating_mul(factor),
+            cache_capacity: self.cache_capacity.saturating_mul(factor),
+            ..self
+        }
+    }
 }
 
 /// How the transition relation is split for image and preimage.
@@ -85,12 +164,14 @@ pub enum Partitioning {
 }
 
 impl Default for Config {
-    /// 2²⁰ nodes, 2¹⁸ cache entries, groups up to 10⁵ nodes (the `SymBA*`
-    /// default), Gamer variable order, disjunctive partitioning.
+    /// 2²⁰ nodes, 2¹⁸ cache entries, retries up to 2²³ nodes, groups up to
+    /// 10⁵ nodes (the `SymBA*` default), Gamer variable order, disjunctive
+    /// partitioning.
     fn default() -> Self {
         Self {
             node_capacity: 1 << 20,
             cache_capacity: 1 << 18,
+            max_node_capacity: 1 << 23,
             merge_node_limit: 100_000,
             variable_order: VariableOrder::Gamer,
             partitioning: Partitioning::Disjunctive,
@@ -161,6 +242,30 @@ impl Default for SymbaConfig {
     }
 }
 
+/// `config` with doubled capacities, or `None` past
+/// [`Config::max_node_capacity`].
+fn grow(config: Config) -> Option<Config> {
+    let grown = config.scaled(2);
+
+    (grown.node_capacity <= config.max_node_capacity && grown != config).then_some(grown)
+}
+
+/// Compiles `task` with `config`, doubling the capacities on
+/// [`Error::OutOfMemory`] up to [`Config::max_node_capacity`]. Returns the
+/// configuration that fit.
+///
+/// # Errors
+///
+/// The errors of [`SymbolicTask::new`].
+fn compile_growing(task: &Task, mut config: Config) -> Result<(Config, Model<Oxidd>), Error> {
+    loop {
+        match Model::new(task, &config) {
+            Err(Error::OutOfMemory) => config = grow(config).ok_or(Error::OutOfMemory)?,
+            result => return Ok((config, result?)),
+        }
+    }
+}
+
 /// Source of [`SymbolicTask`] ids, which tie heuristics to their task.
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -180,10 +285,26 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 /// | [`greedy`](Self::greedy) (GBFS) | used for tie breaking | any |
 /// | [`symba`](Self::symba), [`symba_with`](Self::symba_with) (`SymBA*`) | used | cheapest (or [`Error::BudgetExhausted`]) |
 pub struct SymbolicTask {
-    /// The compiled model on the default backend.
+    /// The compiled model on the default backend, in the manager that
+    /// [`Heuristic`]s of this task live in.
     model: Model<Oxidd>,
     /// Unique id; [`Heuristic`]s remember it.
     id: u64,
+    /// The task, kept for recompiling with a larger manager.
+    task: Task,
+    /// The configuration [`SymbolicTask::model`] was compiled with.
+    config: Config,
+    /// The largest model an out-of-memory retry built so far; searches
+    /// without heuristics start there.
+    grown: Mutex<Option<Arc<Grown>>>,
+}
+
+/// A model compiled again with a larger manager after running out of nodes.
+struct Grown {
+    /// Its configuration.
+    config: Config,
+    /// The model.
+    model: Model<Oxidd>,
 }
 
 /// A heuristic for [`SymbolicTask::astar`] and [`SymbolicTask::greedy`],
@@ -210,10 +331,74 @@ impl SymbolicTask {
     /// - [`Error::OutOfMemory`] when the relations do not fit into
     ///   [`Config::node_capacity`].
     pub fn new(task: &Task, config: Config) -> Result<Self, Error> {
+        let (config, model) = compile_growing(task, config)?;
+
         Ok(Self {
-            model: Model::new(task, &config)?,
+            model,
             id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
+            task: task.clone(),
+            config,
+            grown: Mutex::new(None),
         })
+    }
+
+    /// The node capacity the searches without a heuristic start from: the
+    /// configured one, or the larger one an earlier retry grew to.
+    #[must_use]
+    pub fn node_capacity(&self) -> usize {
+        self.grown_model()
+            .map_or(self.config.node_capacity, |g| g.config.node_capacity)
+    }
+
+    /// Runs `search` on the largest model so far, and on running out of
+    /// nodes, on models with doubled capacity up to
+    /// [`Config::max_node_capacity`]. Remembers the largest model built.
+    ///
+    /// # Errors
+    ///
+    /// Any error of `search`; [`Error::OutOfMemory`] only past the cap.
+    fn retrying<T>(&self, search: impl Fn(&Model<Oxidd>) -> Result<T, Error>) -> Result<T, Error> {
+        let grown = self.grown_model();
+        let (mut config, result) = match &grown {
+            Some(g) => (g.config, search(&g.model)),
+            None => (self.config, search(&self.model)),
+        };
+        if !matches!(result, Err(Error::OutOfMemory)) {
+            return result;
+        }
+
+        loop {
+            config = grow(config).ok_or(Error::OutOfMemory)?;
+            let (grown_config, model) = compile_growing(&self.task, config)?;
+            config = grown_config;
+            let result = search(&model);
+            self.remember(Grown { config, model });
+            if !matches!(result, Err(Error::OutOfMemory)) {
+                return result;
+            }
+        }
+    }
+
+    /// The model of the last retry, if any.
+    fn grown_model(&self) -> Option<Arc<Grown>> {
+        self.grown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Keeps `grown` for later searches when it is larger than the one kept.
+    fn remember(&self, grown: Grown) {
+        let mut slot = self
+            .grown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot
+            .as_ref()
+            .is_none_or(|g| g.config.node_capacity < grown.config.node_capacity)
+        {
+            *slot = Some(Arc::new(grown));
+        }
     }
 
     /// Symbolic forward breadth-first search from the initial state.
@@ -226,7 +411,7 @@ impl SymbolicTask {
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
     pub fn forward_bfs(&self) -> Result<Option<Solution>, Error> {
-        self.model.bfs(Direction::Forward)
+        self.retrying(|model| model.bfs(Direction::Forward))
     }
 
     /// Symbolic backward breadth-first search from the goal states.
@@ -239,7 +424,7 @@ impl SymbolicTask {
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
     pub fn backward_bfs(&self) -> Result<Option<Solution>, Error> {
-        self.model.bfs(Direction::Backward)
+        self.retrying(|model| model.bfs(Direction::Backward))
     }
 
     /// Symbolic Dijkstra (uniform-cost search) forward from the initial state.
@@ -280,8 +465,7 @@ impl SymbolicTask {
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
     pub fn forward_dijkstra(&self) -> Result<Option<Solution>, Error> {
-        self.model
-            .best_first(Direction::Forward, self.blind(), Strategy::Cheapest)
+        self.retrying(|model| model.dijkstra(Direction::Forward))
     }
 
     /// Symbolic Dijkstra backward from the goal states.
@@ -292,8 +476,7 @@ impl SymbolicTask {
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
     pub fn backward_dijkstra(&self) -> Result<Option<Solution>, Error> {
-        self.model
-            .best_first(Direction::Backward, self.blind(), Strategy::Cheapest)
+        self.retrying(|model| model.dijkstra(Direction::Backward))
     }
 
     /// Bidirectional symbolic Dijkstra: forward and backward uniform-cost
@@ -334,19 +517,7 @@ impl SymbolicTask {
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
     pub fn bidirectional_dijkstra(&self) -> Result<Option<Solution>, Error> {
-        let (model, b) = (&self.model, self.model.backend());
-        let side = |direction| {
-            Frontier::new(
-                b,
-                model.concrete(),
-                direction,
-                Partition::zero(b),
-                Strategy::Cheapest,
-            )
-        };
-        let (forward, backward) = (side(Direction::Forward)?, side(Direction::Backward)?);
-
-        model.bidirectional(forward, backward, &mut |_| Ok(()))
+        self.retrying(Model::bidirectional_dijkstra)
     }
 
     /// `BDDA*`: symbolic A* forward from the initial state, guided by
@@ -551,7 +722,7 @@ impl SymbolicTask {
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
     pub fn symba_with(&self, config: &SymbaConfig) -> Result<Option<Solution>, Error> {
-        Ok(self.model.symba(config)?.0)
+        self.retrying(|model| Ok(model.symba(config)?.0))
     }
 
     /// The symbolic pattern database of `pattern`: the exact cost to the goal
@@ -626,11 +797,6 @@ impl SymbolicTask {
         let set = self.model.facts(&facts)?;
 
         Ok(partition.value(self.model.backend(), &set)?)
-    }
-
-    /// The blind heuristic in this task's manager.
-    fn blind(&self) -> Partition<Oxidd> {
-        Partition::zero(self.model.backend())
     }
 
     /// A copy of the partition of `heuristic`, checked to belong to this

@@ -1,6 +1,7 @@
 //! Integration tests: symbolic searches against explicit-state BFS and
 //! Dijkstra oracles, with every plan checked by `Task::validate_plan`.
 
+mod capacity;
 mod costs;
 mod fixtures;
 mod handmade;
@@ -16,6 +17,7 @@ use symbolic_search::{Config, Partitioning, Solution, SymbolicTask, VariableOrde
 const SMALL: Config = Config {
     node_capacity: 1 << 15,
     cache_capacity: 1 << 12,
+    max_node_capacity: 1 << 15,
     merge_node_limit: 1 << 10,
     variable_order: VariableOrder::Gamer,
     partitioning: Partitioning::Disjunctive,

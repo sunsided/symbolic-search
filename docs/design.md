@@ -456,11 +456,15 @@ crate needs one (see "Cross-crate needs").
 - Plan type: `Vec<OpId>` now. Should a shared `Plan` type live in
   `sas-plus`?
 - Axioms: which of the encodings of Speck et al. (2019) to implement?
-- Default `Config` capacities: 2²⁰ nodes (about 16 bytes per node plus its
-  unique-table slot, so a few dozen MiB) and 2¹⁸ cache entries (a few dozen
-  bytes each). Sizing is static (oxidd does not grow the table). Bigger
-  defaults, a size derived from the task, or a retry with a larger manager
-  on `OutOfMemory`?
+- Capacities: `Config::for_task` derives the node table from the state
+  bits and operator count (`2⁹·bits + 2⁶·bits·ops`, power of two, clamped
+  to 2¹²..2²²), and an `OutOfMemory` while compiling or in a search
+  without a heuristic argument recompiles with doubled capacities up to
+  `Config::max_node_capacity` and reruns; the grown model is kept for
+  later searches. `astar`, `greedy`, `pdb` and `evaluate` do not retry,
+  because heuristic BDDs live in the original manager. Is the estimate's
+  shape right for IPC tasks, and should heuristics be rebuilt in the grown
+  manager instead?
 - Default `merge_node_limit` 100 000 (SymBA\*'s value) and Gamer as the
   default order: keep, or tune on IPC tasks?
 

@@ -156,11 +156,6 @@ impl<B: Backend> Model<B> {
         &self.backend
     }
 
-    /// The concrete state space.
-    pub(crate) fn concrete(&self) -> &Space<B> {
-        &self.concrete
-    }
-
     /// Number of SAS+ variables.
     pub(crate) fn num_vars(&self) -> usize {
         self.encoding.num_vars()

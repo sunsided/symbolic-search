@@ -19,6 +19,19 @@ use crate::model::{Direction, Model, orient};
 use crate::{Error, Solution};
 
 impl<B: Backend> Model<B> {
+    /// Blind Dijkstra in `direction`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::OutOfMemory`] when the node table fills up.
+    pub(crate) fn dijkstra(&self, direction: Direction) -> Result<Option<Solution>, Error> {
+        self.best_first(
+            direction,
+            Partition::zero(&self.backend),
+            Strategy::Cheapest,
+        )
+    }
+
     /// Best-first search in `direction` with `heuristic` and `strategy`.
     ///
     /// Returns a plan in execution order, or `None` when the target is not

@@ -24,7 +24,8 @@
 use sas_plus::OpId;
 
 use crate::backend::{Backend, BackendResult};
-use crate::model::frontier::Frontier;
+use crate::model::frontier::{Frontier, Strategy};
+use crate::model::heuristic::Partition;
 use crate::model::{Direction, Model};
 use crate::{Error, Solution};
 
@@ -141,6 +142,27 @@ impl<B: Backend> Model<B> {
         };
 
         Ok(Error::BudgetExhausted { best, lower_bound })
+    }
+
+    /// Bidirectional blind Dijkstra in the concrete space.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::OutOfMemory`] when the node table fills up.
+    pub(crate) fn bidirectional_dijkstra(&self) -> Result<Option<Solution>, Error> {
+        let b = &self.backend;
+        let side = |direction| {
+            Frontier::new(
+                b,
+                &self.concrete,
+                direction,
+                Partition::zero(b),
+                Strategy::Cheapest,
+            )
+        };
+        let (forward, backward) = (side(Direction::Forward)?, side(Direction::Backward)?);
+
+        self.bidirectional(forward, backward, &mut |_| Ok(()))
     }
 
     /// Intersects `states`, found at cost `g` by `this`, with the closed
