@@ -15,11 +15,16 @@ sequential plan as a `Vec<sas_plus::OpId>` in execution order.
 graph LR
     Task[sas_plus::Task] --> Validate[validate, reject axioms]
     Validate --> Encoding[binary encoding]
+    Validate --> Order[Gamer variable order]
+    Order --> Encoding
     Encoding --> TR[per-operator relations]
+    TR --> Groups[merged groups per cost]
     Encoding --> Sets[initial and goal sets]
-    TR --> Search[layered BFS]
+    Groups --> Search[BFS, Dijkstra, BDDA*, GBFS, bidirectional, SymBA*]
+    Groups --> Abs[projected spaces: PDBs, perimeters]
+    Abs --> Search
     Sets --> Search
-    Search --> Trace[plan reconstruction]
+    Search --> Trace[plan reconstruction with per-operator relations]
     Trace --> Plan[Vec of OpId]
 ```
 
@@ -29,10 +34,18 @@ Code map:
 |---|---|
 | `backend` | `Backend` trait, the only place that knows the BDD library |
 | `backend::bcdd` | `Backend` on `oxidd` complement-edge BDDs |
+| `order` | static variable orders (task order, Gamer) |
 | `encoding` | bit layout, fact, state, validity and frame-axiom BDDs |
-| `relation` | per-operator transition relation, image, preimage |
-| `model` | compiled task, layered BFS, plan reconstruction |
-| `search` | public `SymbolicTask` and `Config` |
+| `relation` | transition relations, image, preimage, merged groups, projection |
+| `model` | compiled task, unit-cost BFS, cost-aware plan reconstruction |
+| `model::space` | a searchable space: groups plus initial and goal sets |
+| `model::frontier` | one search direction: open buckets by `(g, h)`, closed layers |
+| `model::heuristic` | heuristics as a partition of BDDs by `h` value |
+| `model::best_first` | unidirectional Dijkstra, BDDA\*, GBFS |
+| `model::bidirectional` | bidirectional search with meeting checks |
+| `model::abstraction` | variable-dropping projections, PDBs, perimeters |
+| `model::symba` | SymBA\* driver |
+| `search` | public `SymbolicTask`, `Config`, `Heuristic` |
 
 ## SAS+ to binary encoding
 
@@ -70,11 +83,14 @@ bit:    v0.b0  v0.b0' v0.b1  v0.b1' v1.b0  v1.b0' ...
 
 Interleaving keeps relations of the form `x' = f(x)` linear in size; with
 all current bits above all next bits, a single frame axiom `x' = x` is
-already exponential. Across SAS+ variables, milestone 1 keeps the task's
-order. Planned: Gamer's static order, which places dependent variables
-close together by approximating a linear arrangement problem over the
-variable dependencies (Kissmann and Edelkamp 2011). The order is set before
-any node exists. Dynamic reordering (sifting) is out of scope: the chosen
+already exponential. Across SAS+ variables, the default is Gamer's static
+order, which places dependent variables close together by approximating a
+linear arrangement problem over the causal graph (Kissmann and Edelkamp
+2011): minimise `Σ (pos(u) − pos(v))²` over causal-graph arcs. Gamer
+optimises from random starts; this crate starts from the task order and
+runs deterministic pairwise-swap hill climbing (at most 32 sweeps), so runs
+are reproducible. `VariableOrder::Task` keeps the task order. The order is
+set before any node exists. Dynamic reordering (sifting) is out of scope: the chosen
 backend does not offer it (see below), and the planners this design
 follows use a static order.
 
@@ -109,22 +125,27 @@ fires. Unconditional effects collapse to `v' = a`. A test pins the
 
 - *Monolithic* `T = ⋁_o T_o`: one relational product per step, but `T`
   explodes quickly.
-- *Disjunctive partitioning* (what milestone 1 does in its simplest form,
+- *Disjunctive partitioning* (the base form, with `merge_node_limit` 0:
   one part per operator): `image(S) = ⋁_o image_o(S)`. Plan reconstruction
   needs per-operator parts anyway.
-- *Merged disjunctive groups*: merge operator relations, in a balanced tree,
-  up to a node threshold, as SymBA\* does, so one step
-  does fewer relational products. The merged parts need a shared
-  quantification set (the union of affected variables) and explicit frame
-  axioms for the variables only some members touch. Planned for milestone 3,
-  with per-operator relations kept for reconstruction.
+- *Merged disjunctive groups* (implemented): operators of one cost are
+  merged, in operator order, while the merged BDD stays within
+  `Config::merge_node_limit` nodes (default 100 000, the SymBA\* default;
+  0 keeps one relation per operator). The merged parts share a
+  quantification set (the union of affected variables) and get explicit
+  frame axioms for the variables only some members touch. SymBA\* merges in
+  a balanced tree; greedy sequential merging is simpler and was enough so
+  far. Per-operator relations are kept for reconstruction. A unit test pins
+  that group images and preimages equal the union of the operators'.
 - *Conjunctive partitioning* (Burch, Clarke and Long 1991): `T = ⋀_i T_i`
   with early quantification. Fits synchronous systems; for interleaving
-  planning operators the disjunctive form is the natural one. Not planned.
-- *Cost grouping*: for Dijkstra, BDDA\* and SymBA\*, relations are grouped by
-  operator cost first, then merged within a cost.
+  planning operators the disjunctive form is the natural one. Not
+  implemented.
+- *Cost grouping* (implemented): groups never mix costs, so a search step
+  files each group's image at `g + cost`. BFS ignores the costs and unions
+  all groups.
 
-**Axioms** are rejected with `Error::Axioms` in milestone 1. Speck et al.
+**Axioms** are rejected with `Error::Axioms`. Speck et al.
 (2019) encode derived variables symbolically, either by compiling the axiom
 fixpoint into a BDD per derived variable or by evaluating it per layer. The
 first fits `sas-plus` semantics (layered, negation by failure) and is
@@ -175,31 +196,65 @@ inside valid codes, so the decoded state is a real state of the set.
 Both directions return a plan of minimum length. When the initial state
 already satisfies the goal, the plan is empty.
 
-## Cost handling (Dijkstra, BDDA\*, SymBA\*)
+## Cost handling (Dijkstra, BDDA\*, GBFS, SymBA\*)
 
-Planned for milestones 3 and 5. The design follows Torralba et al. (2017):
+One frontier type (`model::frontier`) runs all cost-aware searches, in
+either direction and in the concrete or a projected space.
 
-- **Dijkstra.** Open is a map `g → BDD`, a bucket per distinct cost. Expand
-  the cheapest bucket. Zero-cost operators get a BFS closure within the
-  bucket before cost > 0 operators fire. Closed is the union of expanded
-  buckets. Relations are grouped per operator cost.
-- **Plan extraction with costs.** Keep the closed set per `g` value. Walk
-  back from the goal state with cost-`c` relations into the bucket
-  `g − c`. Zero-cost steps walk back within one bucket through its BFS
-  sublayers, so the sublayers are stored as well.
-- **BDDA\*.** Open is a matrix `(g, h) → BDD`. `h` comes from a heuristic
-  that partitions a set by value: a symbolic PDB as a list of BDDs per
-  `h` value, or an explicit heuristic evaluated by splitting the set.
-  Expand the bucket with minimal `f`, and break ties by maximal `g`. An ADD
-  or MTBDD heuristic representation (oxidd has MTBDDs) is an option, but
-  the BDD-per-value form is what SymBA\* uses, and it needs only the
-  `Backend` trait.
-- **Bidirectional Dijkstra.** Stop when `g_f + g_b ≥` the best meeting
-  cost. The meeting test is `closed_f(g) ∧ frontier_b(g')`. Step selection
-  prefers the direction whose last step was cheaper in time or nodes.
-- **SymBA\*.** Bidirectional A\* that switches between perimeter
-  abstractions in each direction, keeping the best plan found. It needs
-  symbolic abstraction heuristics (milestone 5).
+- **Open** maps a key to a BDD. New states at cost `g` are split by the
+  heuristic partition and filed under `(g + h, larger g first)` (Dijkstra,
+  BDDA\*) or `(h, smaller g first)` (GBFS). Dijkstra is BDDA\* with the blind
+  partition `{h = 0: ⊤}`. States outside the partition are dead ends and are
+  dropped.
+- **Closed** is a list of `(g, set)` entries in expansion order, plus their
+  union per `g`. A pop subtracts the states closed at a cost `≤ g` (any cost
+  for GBFS). So a state is reopened only when found more cheaply, which keeps
+  BDDA\* optimal for admissible but inconsistent heuristics, and zero-cost
+  cycles terminate. Zero-cost successors land in the bucket being expanded
+  and are popped next; no separate BFS closure is needed.
+- **Goal test** on pop: the first popped set that meets the target gives an
+  optimal plan for an admissible heuristic.
+- **Reconstruction.** A state filed at cost `g` is the start at `g = 0`, or
+  was generated by an operator of cost `c` from a closed entry with cost
+  `g − c` that comes earlier in the list. The walk picks a concrete state,
+  then repeatedly finds an operator `o` and an earlier entry with cost
+  `g − cost(o)` that `o` connects to, until it stands on the start at
+  `g = 0`. The entry index strictly decreases, so zero-cost steps cannot
+  cycle.
+- **Heuristics** are a partition `(h, BDD)` sorted by `h`, disjoint, with the
+  complement read as dead ends. The maximum of two partitions is their
+  pairwise intersection. A partition can come from a symbolic PDB, a SymBA\*
+  perimeter, or explicit estimates per partial state. An ADD or MTBDD
+  representation (oxidd has MTBDDs) stays an option.
+- **Bidirectional search.** Each step expands the side whose next bucket has
+  fewer BDD nodes. Newly closed sets and newly generated sets are
+  intersected with the other side's closed layers per `g` and with its start
+  set (counted as closed at cost 0). The search stops when the best meeting
+  costs at most `max(f_min(fwd), f_min(bwd), g_min(fwd) + g_min(bwd))`. The
+  rustdoc of `model::bidirectional` sketches why this is a lower bound on
+  any unmet plan. The plan is the forward walk reversed, then the backward
+  walk.
+- **Projections and PDBs.** Dropping variables quantifies their current and
+  next bits out of every group, after restricting them to valid codes.
+  Without that restriction an invalid code disables every conditional effect
+  on it and adds spurious "no effect fires" transitions. Abstract sets then
+  never mention the dropped bits. A PDB is a blind backward Dijkstra to
+  exhaustion in the projection; the closed layers per `g` are the partition,
+  and the rest is dead. The projection is the exact induced abstraction, so
+  with conditional effects it can be more informed than
+  `sas_plus::Projection`, which lets an uncertain effect fire or not.
+- **SymBA\* (simple).** Both sides start blind (bidirectional Dijkstra).
+  When the side about to expand has a next bucket over the node limit, an
+  abstraction that drops one more variable (non-goal variables first, from
+  the last id down) is built, and a blind abstract search runs in the
+  opposite direction until its own next bucket passes the limit. Closed
+  abstract states get their distance, all others the smallest open cost (the
+  perimeter), or dead when the abstract search ran out. The side's
+  heuristic becomes the maximum of the old one and the perimeter, and its
+  open is refiled. All of these are admissible and consistent, so the
+  bidirectional bound stays valid. Not done compared to Torralba et al.:
+  time-based step estimates, a hierarchy chosen by abstract search cost,
+  resuming abstract searches, merge-and-shrink abstractions.
 
 ## Backend comparison and choice
 
@@ -231,7 +286,7 @@ single thread.** Reasons:
    `Error::OutOfMemory` instead of aborting, and tests can cap memory.
 4. Dual MIT OR Apache-2.0 license, actively maintained, and a peer-reviewed
    design. MTBDDs are there if an ADD heuristic is wanted later.
-5. Static reordering covers the planned static variable order. Sifting is
+5. Static reordering covers the static variable order. Sifting is
    missing in both pure-Rust crates inspected (oxidd and biodivine).
 
 Costs of the choice:
@@ -260,11 +315,11 @@ crate needs one (see "Cross-crate needs").
 
 ## Testing strategy
 
-- **Oracle.** A plain explicit-state BFS over `sas_plus::State`s
+- **BFS oracle.** A plain explicit-state BFS over `sas_plus::State`s
   (`tests/it/oracle.rs`) gives the optimal unit-cost plan length. Both
-  symbolic directions must return plans of exactly that length, and
-  `Task::validate_plan(plan).is_some()` must hold. Plan cost is not
-  compared, because random tasks and `gripper-costs` have non-unit costs.
+  symbolic BFS directions must return plans of exactly that length, and
+  `Task::validate_plan(plan).is_some()` must hold. BFS ignores costs, so
+  its plan cost is not compared.
 - **Random tasks.** `sas_plus::random::random_task` sweeps 64 seeds per
   parameter set: the defaults, domains up to 5 (invalid codes), and
   conditional effects with up to two conditions. Each sweep asserts that
@@ -282,31 +337,47 @@ crate needs one (see "Cross-crate needs").
 - **Unit tests.** Backend relational product and rename, `pick` with open
   variables, out-of-memory on a tiny table, bit widths, and backward layers
   staying inside valid codes.
-- **Memory.** Tests use `node_capacity` 2¹⁵ and `cache_capacity` 2¹²; a test
-  that exceeds them fails loudly.
-- **Later.** Dijkstra cost equals `Task::perfect_heuristic` at the initial
-  state on random tasks. Bidirectional results equal unidirectional ones.
-  BDDA\* with a zero heuristic equals Dijkstra. Comparisons against Fast
-  Downward's symbolic search or SymBA\* on translated IPC tasks run outside
-  CI.
+- **Costs.** An explicit-state Dijkstra (`tests/it/oracle.rs`) gives the
+  optimal cost. Forward, backward and bidirectional Dijkstra and SymBA\*
+  (node limit 1, so it abstracts at once, and `usize::MAX`, so it never
+  does) must return plans whose `Task::validate_plan` cost equals it, on
+  random sweeps with costs 1 to 5. Sweeps assert they saw trivial, solved
+  and unsolvable tasks, and the default and wide sweeps also a task where
+  the BFS plan is not cost-optimal. Hand-built tasks cover zero-cost
+  cycles, a zero-cost last step and all-zero costs; `gripper-costs` must
+  cost 7.
+- **Heuristics.** BDDA\* with a goal-variable PDB, with `h*` on the reachable
+  states, and with an inconsistent admissible variant of `h*` must be
+  optimal. GBFS with the PDB must find a plan exactly when one exists. PDB
+  values equal `sas_plus::Projection` goal distances on every reachable
+  state without conditional effects, and lie between them and `h*` with
+  them.
+- **Options.** Every oracle check runs under both extremes: merged groups
+  with the Gamer order, and one relation per operator with the task order.
+- **Unit tests.** Merged groups step like the union of their operators;
+  SymBA\* with node limit 1 installs abstractions; partition maximum and
+  overlap rules; Gamer pulls linked variables together.
+- **Memory.** Tests use `node_capacity` 2¹⁵ and `cache_capacity` 2¹² (unit
+  tests 2¹² and 2⁸); a test that exceeds them fails loudly.
+- **Bench.** `benches/search.rs` runs each search on `gripper-costs`.
+- **Later.** Comparisons against Fast Downward's symbolic search or SymBA\*
+  on translated IPC tasks, outside CI.
 
 ## Milestones
 
 1. **Done.** Encoding, per-operator relations with conditional effects,
    forward and backward symbolic BFS, layered plan reconstruction, oxidd
    backend behind `Backend`.
-2. **Bidirectional BFS** (the roadmap's "BFS and bidirectional first"):
-   time- and node-based direction choice, meeting-layer reconstruction,
-   merged disjunctive relation groups, search statistics (layers, nodes,
-   peak), Gamer's static variable order.
-3. **Symbolic Dijkstra**, forward, backward and bidirectional:
-   cost-grouped relations, zero-cost closure, cost-aware reconstruction.
-   Oracle: `perfect_heuristic`.
+2. **Done.** Gamer static variable order; merged disjunctive groups per
+   cost; symbolic Dijkstra forward, backward and bidirectional with
+   cost-aware reconstruction; BDDA\* and GBFS with partition heuristics;
+   symbolic PDBs; SymBA\* with variable-dropping perimeter abstractions.
+3. **Next.** Search statistics (layers, nodes, peak); time-based direction
+   choice; balanced-tree group merging; a better SymBA\* abstraction
+   hierarchy.
 4. **Axioms**, following Speck et al. (2019). State-invariant (mutex)
    pruning when `sas-plus` provides mutex groups.
-5. **BDDA\*** with symbolic PDBs; then **SymBA\*** with perimeter
-   abstractions; then a merge-and-shrink connection (symbolic heuristics
-   from M&S abstractions).
+5. **Merge-and-shrink** heuristics as BDD partitions.
 
 ## Cross-crate needs
 
@@ -339,8 +410,17 @@ crate needs one (see "Cross-crate needs").
 - Plan type: `Vec<OpId>` now. Should a shared `Plan` type live in
   `sas-plus`?
 - Axioms: which of the encodings of Speck et al. (2019) to implement?
-- Default `Config` capacities. Sizing is static (oxidd does not grow the
-  table). Should the search retry with a larger manager on `OutOfMemory`?
+- Default `Config` capacities: 2²⁰ nodes (about 16 bytes per node plus its
+  unique-table slot, so a few dozen MiB) and 2¹⁸ cache entries (a few dozen
+  bytes each). Sizing is static (oxidd does not grow the table). Bigger
+  defaults, a size derived from the task, or a retry with a larger manager
+  on `OutOfMemory`?
+- Default `merge_node_limit` 100 000 (SymBA\*'s value) and Gamer as the
+  default order: keep, or tune on IPC tasks?
+- `SymbolicTask::symba` takes only a node limit. Should it get a parameter
+  struct (abstraction order, separate abstract-search limit, time budget)?
+- Plans are returned without their cost; `Task::validate_plan` gives it.
+  Return `(plan, cost)` instead?
 
 ## References
 

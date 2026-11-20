@@ -8,15 +8,28 @@
 //! ## Implemented
 //!
 //! - Binary encoding of [`sas_plus::Task`] states, with interleaved current
-//!   and next bits.
-//! - Per-operator transition relations, including conditional effects.
-//! - Symbolic forward and backward breadth-first search (unit cost) with
-//!   layered plan reconstruction.
+//!   and next bits and a Gamer-style static variable order
+//!   ([`VariableOrder`]).
+//! - Per-operator transition relations, including conditional effects,
+//!   merged per cost into disjunctive groups up to a node limit
+//!   ([`Config::merge_node_limit`]).
+//! - Symbolic forward and backward breadth-first search (unit cost).
+//! - Symbolic Dijkstra forward, backward and bidirectional (action costs,
+//!   zero costs included).
+//! - `BDDA*` and symbolic greedy best-first search with a [`Heuristic`]
+//!   stored as one BDD per `h` value: symbolic pattern databases
+//!   ([`SymbolicTask::pdb`]) or explicit estimates
+//!   ([`SymbolicTask::heuristic`]).
+//! - `SymBA*` in a simple form: bidirectional `A*` with perimeter
+//!   abstractions that drop variables.
+//!
+//! Every search reconstructs a plan as operator ids in execution order.
 //!
 //! ## Planned
 //!
-//! Symbolic Dijkstra, bidirectional search, `BDDA*`, `SymBA*` and symbolic
-//! abstraction heuristics. See `docs/design.md` in the repository.
+//! Axioms, mutex pruning, merge-and-shrink heuristics, a resumable
+//! abstraction hierarchy for `SymBA*`. See `docs/design.md` in the
+//! repository.
 //!
 //! ## Example
 //!
