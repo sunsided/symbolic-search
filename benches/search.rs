@@ -5,10 +5,15 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use sas_plus::fdr::SasFile;
-use symbolic_search::{Config, SymbolicTask};
+use symbolic_search::{Config, Partitioning, SymbolicTask};
 
-/// Compiles the gripper-with-costs fixture.
+/// Compiles the gripper-with-costs fixture with merged disjunctive groups.
 fn gripper() -> SymbolicTask {
+    gripper_with(Config::default())
+}
+
+/// Compiles the gripper-with-costs fixture with `base` and small tables.
+fn gripper_with(base: Config) -> SymbolicTask {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/gripper-costs/output.sas"
@@ -18,7 +23,7 @@ fn gripper() -> SymbolicTask {
     let config = Config {
         node_capacity: 1 << 16,
         cache_capacity: 1 << 14,
-        ..Config::default()
+        ..base
     };
 
     SymbolicTask::new(&task, config).expect("task compiles")
@@ -42,5 +47,51 @@ fn searches(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, searches);
+/// Forward and bidirectional Dijkstra under merged disjunctive groups, one
+/// disjunctive relation per operator (to separate the cost of lost merging
+/// from the cost of the conjuncts), and conjunctive clusters.
+fn partitionings(c: &mut Criterion) {
+    let variants = [
+        ("disjunctive_merged", Config::default()),
+        (
+            "disjunctive_per_operator",
+            Config {
+                merge_node_limit: 0,
+                ..Config::default()
+            },
+        ),
+        (
+            "conjunctive_per_conjunct",
+            Config {
+                partitioning: Partitioning::Conjunctive {
+                    cluster_node_limit: 0,
+                },
+                ..Config::default()
+            },
+        ),
+        (
+            "conjunctive_clustered",
+            Config {
+                partitioning: Partitioning::Conjunctive {
+                    cluster_node_limit: 64,
+                },
+                ..Config::default()
+            },
+        ),
+    ];
+    let mut group = c.benchmark_group("gripper-costs-partitioning");
+    for (name, config) in variants {
+        let symbolic = gripper_with(config);
+        group.bench_function(format!("{name}/forward_dijkstra"), |b| {
+            b.iter(|| symbolic.forward_dijkstra());
+        });
+        group.bench_function(format!("{name}/backward_dijkstra"), |b| {
+            b.iter(|| symbolic.backward_dijkstra());
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, searches, partitionings);
 criterion_main!(benches);

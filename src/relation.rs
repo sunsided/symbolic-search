@@ -32,9 +32,17 @@
 //! within a node limit. Per-operator relations stay around for plan
 //! reconstruction.
 //!
+//! **Conjunctive clusters.** Alternatively, [`conjunctive`] splits each
+//! operator's relation into per-variable conjuncts, clustered up to a node
+//! limit, and computes images and preimages by early quantification. See
+//! that module.
+//!
 //! **Projection.** [`Relation::project`] forgets dropped variables, which
 //! gives the exact transition relation of the domain abstraction that
-//! drops them.
+//! drops them. Projected relations are always monolithic: `∃` does not
+//! distribute over `∧`, so clusters are not projected one by one.
+
+pub(crate) mod conjunctive;
 
 use std::collections::BTreeMap;
 
@@ -63,6 +71,9 @@ pub(crate) struct Relation<B: Backend> {
     to_current: B::Renaming,
     /// Current bits to next bits of the affected variables.
     to_next: B::Renaming,
+    /// Conjunctive clusters in schedule order; empty for a monolithic
+    /// relation, which steps with `diagram` in one relational product.
+    clusters: Vec<conjunctive::Cluster<B>>,
 }
 
 impl<B: Backend> Relation<B> {
@@ -111,6 +122,7 @@ impl<B: Backend> Relation<B> {
             to_current: b.renaming(&next, &current),
             to_next: b.renaming(&current, &next),
             vars,
+            clusters: Vec::new(),
         })
     }
 
@@ -206,6 +218,10 @@ impl<B: Backend> Relation<B> {
     ///
     /// Out of memory in the backend.
     pub(crate) fn image(&self, b: &B, states: &B::Set) -> BackendResult<B::Set> {
+        if !self.clusters.is_empty() {
+            return self.clustered_image(b, states);
+        }
+
         let product = b.and_exists(states, &self.diagram, &self.current)?;
 
         b.rename(&product, &self.to_current)
@@ -217,10 +233,35 @@ impl<B: Backend> Relation<B> {
     ///
     /// Out of memory in the backend.
     pub(crate) fn preimage(&self, b: &B, states: &B::Set) -> BackendResult<B::Set> {
+        if !self.clusters.is_empty() {
+            return self.clustered_preimage(b, states);
+        }
+
         let shifted = b.rename(states, &self.to_next)?;
 
         b.and_exists(&shifted, &self.diagram, &self.next)
     }
+}
+
+/// One conjunctively clustered relation per operator of `task`, sorted by
+/// cost (stable, so operator order within a cost).
+///
+/// # Errors
+///
+/// Out of memory in the backend.
+pub(crate) fn conjunctive_groups<B: Backend>(
+    b: &B,
+    encoding: &Encoding,
+    operators: &[Operator],
+    cluster_node_limit: usize,
+) -> BackendResult<Vec<Relation<B>>> {
+    let mut groups = operators
+        .iter()
+        .map(|operator| Relation::conjunctive(b, encoding, operator, cluster_node_limit))
+        .collect::<BackendResult<Vec<_>>>()?;
+    groups.sort_by_key(|group| group.cost);
+
+    Ok(groups)
 }
 
 /// Merges `operators` into disjunctive groups of equal cost.

@@ -9,7 +9,7 @@ mod oracle;
 mod random;
 
 use sas_plus::Task;
-use symbolic_search::{Config, SymbolicTask, VariableOrder};
+use symbolic_search::{Config, Partitioning, SymbolicTask, VariableOrder};
 
 /// Small BDD limits, so tests stay light on memory. Merged relation groups
 /// and the Gamer order.
@@ -18,6 +18,7 @@ const SMALL: Config = Config {
     cache_capacity: 1 << 12,
     merge_node_limit: 1 << 10,
     variable_order: VariableOrder::Gamer,
+    partitioning: Partitioning::Disjunctive,
 };
 
 /// [`SMALL`] with one relation per operator and the task's variable order,
@@ -28,8 +29,18 @@ const PER_OPERATOR: Config = Config {
     ..SMALL
 };
 
-/// Both option extremes; every oracle check runs on each.
-const CONFIGS: [Config; 2] = [SMALL, PER_OPERATOR];
+/// [`SMALL`] with conjunctive partitioning, one cluster per conjunct, so
+/// early quantification runs at its finest.
+const CONJUNCTIVE: Config = Config {
+    partitioning: Partitioning::Conjunctive {
+        cluster_node_limit: 0,
+    },
+    ..SMALL
+};
+
+/// Both option extremes of the disjunctive partitioning, and the
+/// conjunctive one; every oracle check runs on each.
+const CONFIGS: [Config; 3] = [SMALL, PER_OPERATOR, CONJUNCTIVE];
 
 /// Plans of both symbolic BFS directions on `task` under `config`, forward
 /// first.

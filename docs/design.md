@@ -137,10 +137,23 @@ fires. Unconditional effects collapse to `v' = a`. A test pins the
   a balanced tree; greedy sequential merging is simpler and was enough so
   far. Per-operator relations are kept for reconstruction. A unit test pins
   that group images and preimages equal the union of the operators'.
-- *Conjunctive partitioning* (Burch, Clarke and Long 1991): `T = ⋀_i T_i`
-  with early quantification. Fits synchronous systems; for interleaving
-  planning operators the disjunctive form is the natural one. Not
-  implemented.
+- *Conjunctive partitioning* (Burch, Clarke and Long 1991; implemented as
+  `Partitioning::Conjunctive`): `T = ⋀_i T_i` with early quantification.
+  A disjunction of operators does not distribute over conjuncts, so only
+  single operators are split: `T_o = pre_rest ∧ ⋀_{v ∈ eff(o)} C_v` with
+  `C_v = pre_v ∧ valid_v ∧ E_v`, one relation per operator and no merging.
+  Untouched variables keep their frame because they are never quantified.
+  The schedule is greedy in the IWLS95 spirit: the precondition conjunct
+  first, then the conjunct that retires the most affected variables, ties
+  to the smaller support. Consecutive conjuncts are clustered while a
+  cluster has at most `cluster_node_limit` nodes. The image quantifies the
+  current bits of `v` after the last cluster that mentions `v`; the
+  preimage quantifies the next bits of `v` after `C_v`'s cluster. Projected
+  relations (PDBs, SymBA\* perimeters) stay monolithic, since `∃` does not
+  distribute over `∧`. A unit test pins that images and preimages equal the
+  union of the monolithic operator relations, at cluster limits 0 to
+  `usize::MAX`, from all valid states and from every BFS layer of 16
+  random tasks with conditional effects.
 - *Cost grouping* (implemented): groups never mix costs, so a search step
   files each group's image at `g + cost`. BFS ignores the costs and unions
   all groups.
@@ -353,8 +366,9 @@ crate needs one (see "Cross-crate needs").
   values equal `sas_plus::Projection` goal distances on every reachable
   state without conditional effects, and lie between them and `h*` with
   them.
-- **Options.** Every oracle check runs under both extremes: merged groups
-  with the Gamer order, and one relation per operator with the task order.
+- **Options.** Every oracle check runs under three configs: merged groups
+  with the Gamer order, one relation per operator with the task order, and
+  conjunctive clusters of one conjunct each.
 - **Unit tests.** Merged groups step like the union of their operators;
   SymBA\* with node limits 1 to 16 installs informative (not
   blind) perimeters; partition maximum and

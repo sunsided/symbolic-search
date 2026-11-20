@@ -29,7 +29,7 @@ use sas_plus::{OpId, Task};
 use crate::backend::{Backend, BackendResult, Capacity};
 use crate::encoding::Encoding;
 use crate::relation::{self, Relation};
-use crate::{Config, Error};
+use crate::{Config, Error, Partitioning};
 use frontier::Frontier;
 use space::Space;
 
@@ -117,7 +117,17 @@ impl<B: Backend> Model<B> {
             .iter()
             .map(|operator| Relation::new(&backend, &encoding, operator))
             .collect::<BackendResult<Vec<_>>>()?;
-        let groups = relation::partition(&backend, &encoding, &operators, config.merge_node_limit)?;
+        let groups = match config.partitioning {
+            Partitioning::Disjunctive => {
+                relation::partition(&backend, &encoding, &operators, config.merge_node_limit)?
+            }
+            Partitioning::Conjunctive { cluster_node_limit } => relation::conjunctive_groups(
+                &backend,
+                &encoding,
+                &task.operators,
+                cluster_node_limit,
+            )?,
+        };
         let initial = encoding.state(&backend, &task.initial)?;
         let goal = backend.and(
             &encoding.facts(&backend, &task.goal)?,
@@ -401,6 +411,9 @@ mod tests {
     use super::*;
     use crate::backend::bcdd::Oxidd;
 
+    /// A set in the test backend.
+    type BddSet = <Oxidd as Backend>::Set;
+
     /// Tiny limits for unit tests.
     pub(crate) fn tiny_config() -> Config {
         Config {
@@ -477,6 +490,129 @@ mod tests {
                 assert!(model.successors(&all, direction).unwrap() == union);
             }
         }
+    }
+
+    /// The union of the per-operator (monolithic) steps from `states`.
+    fn operator_union(model: &Model<Oxidd>, states: &BddSet, direction: Direction) -> BddSet {
+        let b = &model.backend;
+
+        model.operators.iter().fold(b.constant(false), |acc, op| {
+            b.or(&acc, &op.step(b, states, direction).unwrap()).unwrap()
+        })
+    }
+
+    /// Start sets for step comparisons: all valid states, plus every layer
+    /// of a forward and a backward BFS.
+    fn probe_sets(model: &Model<Oxidd>) -> Vec<BddSet> {
+        let b = &model.backend;
+        let mut sets = vec![model.encoding.all_valid(b).unwrap()];
+        for direction in [Direction::Forward, Direction::Backward] {
+            let start = model.concrete.start(direction);
+            let mut layer = start.clone();
+            let mut reached = start.clone();
+            while !b.is_empty(&layer) {
+                sets.push(layer.clone());
+                let next = model.successors(&layer, direction).unwrap();
+                layer = b.and(&next, &b.not(&reached).unwrap()).unwrap();
+                reached = b.or(&reached, &layer).unwrap();
+            }
+        }
+
+        sets
+    }
+
+    /// Conjunctive clusters step exactly like the union of the monolithic
+    /// operator relations, image and preimage, at cluster limits from one
+    /// conjunct per cluster to one cluster per operator.
+    #[test]
+    fn conjunctive_clusters_equal_operator_union() {
+        let mut split_with_conditions = 0;
+        for limit in [0, 8, 64, usize::MAX] {
+            for seed in 0..16 {
+                let task = random(seed);
+                let config = Config {
+                    partitioning: Partitioning::Conjunctive {
+                        cluster_node_limit: limit,
+                    },
+                    ..tiny_config()
+                };
+                let model = Model::<Oxidd>::new(&task, &config).unwrap();
+                assert_eq!(model.concrete.groups.len(), model.operators.len());
+                split_with_conditions +=
+                    usize::from(limit == 0 && task.operators.iter().any(has_cross_condition));
+
+                for states in probe_sets(&model) {
+                    for direction in [Direction::Forward, Direction::Backward] {
+                        let union = operator_union(&model, &states, direction);
+                        assert!(model.successors(&states, direction).unwrap() == union);
+                    }
+                }
+            }
+        }
+
+        assert!(
+            split_with_conditions > 0,
+            "no conditional cross-variable effect"
+        );
+    }
+
+    /// Whether `operator` affects two variables and one of its effect
+    /// conditions names another affected variable, so early quantification
+    /// has to wait for a later conjunct.
+    fn has_cross_condition(operator: &Operator) -> bool {
+        let affected: Vec<_> = operator.eff.iter().map(|e| e.fact.var).collect();
+        operator.eff.iter().any(|e| {
+            e.conditions
+                .iter()
+                .any(|c| c.var != e.fact.var && affected.contains(&c.var))
+        })
+    }
+
+    /// One cluster per conjunct gives more than one cluster for an operator
+    /// with two effects, and the precondition on an untouched variable
+    /// still filters.
+    #[test]
+    fn conjunctive_split_has_one_cluster_per_conjunct() {
+        let task = Task {
+            variables: vec![
+                Variable::new("a", 2),
+                Variable::new("b", 3),
+                Variable::new("c", 2),
+            ],
+            operators: vec![Operator {
+                name: "swap".into(),
+                pre: vec![Fact::new(2, 1)],
+                eff: vec![
+                    Effect::new(Fact::new(0, 1)),
+                    Effect {
+                        conditions: vec![Fact::new(0, 0)],
+                        fact: Fact::new(1, 2),
+                    },
+                ],
+                cost: 1,
+            }],
+            initial: State(vec![0, 0, 1]),
+            goal: vec![Fact::new(1, 2)],
+            axioms: vec![],
+        };
+        let config = Config {
+            partitioning: Partitioning::Conjunctive {
+                cluster_node_limit: 0,
+            },
+            ..tiny_config()
+        };
+        let model = Model::<Oxidd>::new(&task, &config).unwrap();
+
+        assert_eq!(model.concrete.groups[0].cluster_count(), 3);
+        assert!(has_cross_condition(&task.operators[0]));
+        for states in probe_sets(&model) {
+            for direction in [Direction::Forward, Direction::Backward] {
+                let union = operator_union(&model, &states, direction);
+                assert!(model.successors(&states, direction).unwrap() == union);
+            }
+        }
+
+        assert_eq!(model.bfs(Direction::Forward).unwrap(), Some(vec![0]));
     }
 
     /// With small node limits, `SymBA*` installs informative (not blind)

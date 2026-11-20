@@ -10,7 +10,8 @@ Pre-release (0.0.0); the API will change.
   - binary encoding of `sas_plus::Task` states with a Gamer-style static
     variable order;
   - per-operator transition relations (with conditional effects), merged per
-    cost into disjunctive groups up to a node limit;
+    cost into disjunctive groups up to a node limit, or split into
+    per-variable conjunctive clusters with early quantification;
   - symbolic forward and backward BFS (unit cost);
   - symbolic Dijkstra forward, backward and bidirectional (action costs,
     zero costs included);
@@ -22,8 +23,7 @@ Pre-release (0.0.0); the API will change.
 
   All searches reconstruct plans. BDDs come from
   [`oxidd`](https://crates.io/crates/oxidd) behind an internal backend trait.
-- Not done: axioms (rejected with `Error::Axioms`), conjunctive relation
-  partitioning, mutex pruning, merge-and-shrink heuristics.
+- Not done: axioms (rejected with `Error::Axioms`), mutex pruning, merge-and-shrink heuristics.
 
 See [`docs/design.md`](docs/design.md) for the design and milestones.
 

@@ -12,7 +12,9 @@
 //!   ([`VariableOrder`]).
 //! - Per-operator transition relations, including conditional effects,
 //!   merged per cost into disjunctive groups up to a node limit
-//!   ([`Config::merge_node_limit`]).
+//!   ([`Config::merge_node_limit`]), or split into per-variable conjunctive
+//!   clusters with an early-quantification schedule
+//!   ([`Partitioning::Conjunctive`]).
 //! - Symbolic forward and backward breadth-first search (unit cost).
 //! - Symbolic Dijkstra forward, backward and bidirectional (action costs,
 //!   zero costs included).
@@ -79,4 +81,4 @@ mod search;
 
 pub use error::Error;
 pub use order::VariableOrder;
-pub use search::{Config, Heuristic, SymbolicTask};
+pub use search::{Config, Heuristic, Partitioning, SymbolicTask};

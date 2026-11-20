@@ -40,17 +40,58 @@ pub struct Config {
     pub merge_node_limit: usize,
     /// How the SAS+ variables are ordered in the diagram.
     pub variable_order: VariableOrder,
+    /// How transition relations are split for search steps.
+    pub partitioning: Partitioning,
+}
+
+/// How the transition relation is split for image and preimage.
+///
+/// Both give exactly the same images, preimages and therefore plans; they
+/// differ in BDD sizes and speed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Partitioning {
+    /// Disjunctive groups: operators of equal cost are merged into one BDD
+    /// each, up to [`Config::merge_node_limit`] nodes, and each group's image
+    /// is one relational product.
+    #[default]
+    Disjunctive,
+    /// Conjunctive clusters: one relation per operator (no merging), split
+    /// into one conjunct per affected variable plus the remaining
+    /// preconditions. Consecutive conjuncts in a greedy quantification
+    /// schedule are clustered while a cluster has at most
+    /// `cluster_node_limit` nodes; images and preimages quantify each
+    /// variable right after its last cluster. `0` keeps one cluster per
+    /// conjunct, `usize::MAX` one cluster per operator.
+    ///
+    /// [`Config::merge_node_limit`] is ignored, and abstractions
+    /// (PDBs, `SymBA*` perimeters) step with the monolithic operator
+    /// relations.
+    ///
+    /// ```
+    /// use symbolic_search::{Config, Partitioning};
+    ///
+    /// let config = Config {
+    ///     partitioning: Partitioning::Conjunctive { cluster_node_limit: 0 },
+    ///     ..Config::default()
+    /// };
+    /// assert_ne!(config, Config::default());
+    /// ```
+    Conjunctive {
+        /// Largest BDD, in nodes, of a cluster of conjuncts.
+        cluster_node_limit: usize,
+    },
 }
 
 impl Default for Config {
     /// 2²⁰ nodes, 2¹⁸ cache entries, groups up to 10⁵ nodes (the `SymBA*`
-    /// default), Gamer variable order.
+    /// default), Gamer variable order, disjunctive partitioning.
     fn default() -> Self {
         Self {
             node_capacity: 1 << 20,
             cache_capacity: 1 << 18,
             merge_node_limit: 100_000,
             variable_order: VariableOrder::Gamer,
+            partitioning: Partitioning::Disjunctive,
         }
     }
 }
