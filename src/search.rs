@@ -36,14 +36,15 @@ pub struct Config {
     /// bytes plus its unique-table slot. See
     /// [`Config::max_node_capacity`] for what happens when it is too small.
     pub node_capacity: usize,
-    /// Largest node table an automatic retry may use. When compiling, or a
-    /// search without a [`Heuristic`] argument, runs out of nodes, the task
+    /// Largest node table an automatic retry may use. When compiling, a
+    /// heuristic constructor or a search runs out of nodes, the task
     /// is compiled again with twice the node and cache capacity, up to this
     /// many nodes, and the search reruns on the larger manager (which later
     /// searches reuse). Only past this cap do they fail with
     /// [`Error::OutOfMemory`]. Set it to [`Config::node_capacity`] or below
-    /// to turn retries off. Searches that take a [`Heuristic`] never retry,
-    /// because the heuristic's BDDs live in the original manager.
+    /// to turn retries off. Heuristic constructors and searches that take a
+    /// [`Heuristic`] retry too: the heuristic is rebuilt in the grown
+    /// manager from how it was made (on every such call, for now).
     pub max_node_capacity: usize,
     /// Number of entries of the operation cache. Larger caches avoid
     /// recomputation at the price of memory (a few dozen bytes per entry).
@@ -287,15 +288,16 @@ impl Default for SymbaConfig {
     /// Concrete and abstract node limits of 1024 nodes, slices of 8
     /// abstract expansions, the variable-dropping hierarchy, no budget.
     ///
-    /// Tuned on seven random tasks with 14 variables and 48 operators
-    /// (six solvable random-walk tasks and one unsolvable one;
-    /// `model::symba::tuning::tune_large_defaults`), summed best-of-3
-    /// times: frontier limit 1024 took 6.4 ms against 7.1 to 7.6 ms for
-    /// 256 and 7.8 to 11 ms for 10⁴ and unlimited (which never abstract
-    /// there); abstract limits 1024 and 10⁴ tie, as do the two drop
-    /// hierarchies; merge-and-shrink perimeters cost 8 ms to 1.7 s. The
-    /// margins are about 20 % on a loaded machine, so treat them as a
-    /// starting point.
+    /// Tuned on seven random tasks with 14 variables and 48 operators (six
+    /// solvable random-walk tasks and one unsolvable one;
+    /// `model::symba::tuning::tune_large_defaults`, best of 3 runs on fresh
+    /// managers). Blind search (limits 10⁴ and up never abstract there)
+    /// takes 33 to 45 ms on the six solvable tasks but 146 to 263 ms on the
+    /// unsolvable one; these defaults take about 75 ms and 30 ms. Limit 256
+    /// proves unsolvability in 3 to 9 ms but slows solvable tasks further
+    /// (75 to 150 ms). The drop hierarchies tie; merge-and-shrink
+    /// perimeters match these defaults at limit 1024 and cost seconds at
+    /// 256. The machine was loaded, so treat this as a starting point.
     fn default() -> Self {
         Self {
             frontier_node_limit: 1024,
@@ -376,8 +378,7 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 /// | [`greedy`](Self::greedy) (GBFS) | used for tie breaking | any |
 /// | [`symba`](Self::symba), [`symba_with`](Self::symba_with) (`SymBA*`) | used | cheapest (or [`Error::BudgetExhausted`]) |
 pub struct SymbolicTask<B: Backend = Oxidd> {
-    /// The compiled model on backend `B`, in the manager that
-    /// [`Heuristic`]s of this task live in.
+    /// The model compiled with the configured capacity on backend `B`.
     model: Model<B>,
     /// Unique id; [`Heuristic`]s remember it.
     id: u64,
@@ -385,8 +386,8 @@ pub struct SymbolicTask<B: Backend = Oxidd> {
     task: Task,
     /// The configuration [`SymbolicTask::model`] was compiled with.
     config: Config,
-    /// The largest model an out-of-memory retry built so far; searches
-    /// without heuristics start there.
+    /// The largest model an out-of-memory retry built so far; every search
+    /// and heuristic constructor starts there.
     grown: Mutex<Option<Arc<Grown<B>>>>,
 }
 
@@ -401,8 +402,10 @@ struct Grown<B: Backend> {
 /// A heuristic for [`SymbolicTask::astar`] and [`SymbolicTask::greedy`],
 /// stored as one BDD per `h` value.
 ///
-/// Built by [`SymbolicTask::pdb`] or [`SymbolicTask::heuristic`], and only
-/// usable with the task that built it.
+/// Built by [`SymbolicTask::pdb`], [`SymbolicTask::canonical_pdbs`],
+/// [`SymbolicTask::merge_and_shrink`] or [`SymbolicTask::heuristic`], and
+/// only usable with the task that built it. It remembers how it was made,
+/// so a task that grew its node table can rebuild it there.
 pub struct Heuristic<B: Backend = Oxidd> {
     /// The partition, in the manager of the model with id `model`.
     partition: Partition<B>,
@@ -478,8 +481,8 @@ impl<B: Backend> SymbolicTask<B> {
         })
     }
 
-    /// The node capacity the searches without a heuristic start from: the
-    /// configured one, or the larger one an earlier retry grew to.
+    /// The node capacity searches start from: the configured one, or the
+    /// larger one an earlier retry grew to.
     #[must_use]
     pub fn node_capacity(&self) -> usize {
         self.grown_model()

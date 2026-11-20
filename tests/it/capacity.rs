@@ -72,6 +72,12 @@ fn heuristic_searches_retry_in_a_grown_table() {
         let pdb = symbolic
             .canonical_pdbs(&[vec![0], vec![1]])
             .expect("retries fit");
+        // Built in the original table; only the search outgrows it, so the
+        // search must rebuild the heuristic in the grown table.
+        if symbolic.node_capacity() != before {
+            return None;
+        }
+
         let solution = symbolic.astar(&pdb).expect("retries fit");
         (symbolic.node_capacity() > before).then_some((symbolic, pdb, solution))
     });

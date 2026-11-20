@@ -14,7 +14,15 @@
 //!     Done --> Install
 //!     Install --> Expand
 //!     Expand --> Pick
+//!     Big -- merge-and-shrink hierarchy --> MS[build merge-and-shrink distances once]
+//!     MS --> Install
 //! ```
+//!
+//! With [`AbstractionHierarchy::MergeAndShrink`] there are no levels: the
+//! first abstract work of a side builds the merge-and-shrink distances from
+//! the opposite end in one go (one budget unit; the time limit is not
+//! checked while it builds) and installs them; the side does no more
+//! abstract work.
 //!
 //! Both concrete frontiers start blind, so the search is bidirectional
 //! Dijkstra until a frontier grows past the frontier node limit. From then
@@ -570,6 +578,27 @@ mod tests {
         );
     }
 
+    /// Merge-and-shrink perimeters are installed and keep plans optimal.
+    #[test]
+    fn merge_and_shrink_perimeters_install_and_stay_optimal() {
+        let mut installed = 0;
+        for seed in 0..16 {
+            let (task, model) = model(seed);
+            let config = SymbaConfig {
+                frontier_node_limit: 1,
+                hierarchy: AbstractionHierarchy::MergeAndShrink { node_limit: 16 },
+                ..SymbaConfig::default()
+            };
+            let (plan, stats) = model.symba(&config).unwrap();
+            let reference = model.bidirectional_dijkstra().unwrap();
+
+            installed += stats.installed;
+            assert_eq!(cost(&task, plan), cost(&task, reference), "seed {seed}");
+        }
+
+        assert!(installed > 0);
+    }
+
     /// The budget stops a run at the deterministic extremes: no expansions,
     /// no time; an ample budget changes nothing.
     #[test]
@@ -764,7 +793,9 @@ mod tuning {
     /// tasks ([`large_task`] seeds 0, 1, 2, 9, 12 and 35, the slowest of
     /// the survey) and one unsolvable task (the plain
     /// generator at seed 10, whose state space must be exhausted). Prints
-    /// summed concrete and abstract expansions and best-of-3 wall time.
+    /// summed concrete and abstract expansions and best-of-3 wall time,
+    /// each run on a freshly compiled model (compilation not timed), in
+    /// total and per task.
     /// Run with `cargo test --release --lib tune_large -- --ignored
     /// --nocapture`; `docs/design.md` records the numbers.
     #[test]
@@ -784,11 +815,6 @@ mod tuning {
             .map(large_task)
             .chain([unsolvable])
             .collect();
-        let models: Vec<_> = tasks
-            .iter()
-            .map(|task| Model::<Oxidd>::new(task, &large_config()).unwrap())
-            .collect();
-
         let mut configs = Vec::new();
         for frontier_node_limit in [256, 1024, 10_000, usize::MAX] {
             configs.push(SymbaConfig {
@@ -816,10 +842,13 @@ mod tuning {
 
         for config in configs {
             let (mut concrete, mut abstract_work, mut time) = (0, 0, Duration::ZERO);
-            for model in &models {
+            let mut per_task = Vec::new();
+            for task in &tasks {
                 let mut best = Duration::MAX;
                 let mut stats = Stats::default();
                 for _ in 0..3 {
+                    // A fresh manager per run: no warm operation cache.
+                    let model = Model::<Oxidd>::new(task, &large_config()).unwrap();
                     let start = Instant::now();
                     stats = model.symba(&config).unwrap().1;
                     best = best.min(start.elapsed());
@@ -827,10 +856,11 @@ mod tuning {
                 concrete += stats.expansions - stats.abstract_expansions;
                 abstract_work += stats.abstract_expansions;
                 time += best;
+                per_task.push(best.as_millis());
             }
 
             eprintln!(
-                "frontier {} abstract {} slice {} {:?}: concrete {concrete} abstract {abstract_work} time {time:?}",
+                "frontier {} abstract {} slice {} {:?}: concrete {concrete} abstract {abstract_work} time {time:?} per task ms {per_task:?}",
                 config.frontier_node_limit,
                 config.abstract_node_limit,
                 config.abstract_slice,

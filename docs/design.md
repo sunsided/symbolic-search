@@ -45,6 +45,9 @@ Code map:
 | `model::heuristic` | heuristics as a partition of BDDs by `h` value |
 | `model::best_first` | unidirectional Dijkstra, BDDA\*, GBFS |
 | `model::bidirectional` | bidirectional search with meeting checks |
+| `model::merge_and_shrink` | symbolic merge-and-shrink: classes, linear merge, h-preserving shrink |
+| `backend::reference` | plain-Rust reference BDD backend |
+| `search::recipe` | how heuristics are rebuilt in a grown manager |
 | `model::abstraction` | variable- and bit-dropping projections, PDBs, canonical PDB collections, perimeters |
 | `model::symba` | SymBA\* driver |
 | `search` | public `SymbolicTask`, `Config`, `Partitioning`, `SymbaConfig`, `Heuristic` |
@@ -336,14 +339,18 @@ either direction and in the concrete or a projected space.
   ignored test over seven random tasks with 14 variables, domains up to 4
   and 48 operators: six solvable ones whose goal is 6 facts of the end of
   a 60-step random walk (optimal costs 11 to 19) and one unsolvable one.
-  Summed best-of-3 times: frontier limit 1024 took 6.4 ms (110 concrete
-  and 2 abstract expansions), 256 took 7.1 to 21.8 ms (103 to 125
-  concrete, 11 to 50 abstract), 10⁴ and unlimited never abstract and took
-  7.8 to 11 ms (138 concrete). Abstract limits 1024 and 10⁴ and the two
-  drop hierarchies tie; merge-and-shrink perimeters (limit 1024) cost 8 ms
-  to 1.7 s. On the tiny fixtures, frontiers stay below 64 nodes and no
-  setting abstracts usefully. The machine was loaded (load about 18), so
-  the 20 % margins are indicative only. Not done
+  Each configuration runs 3 times per task on a freshly compiled manager
+  (a warm operation cache made reruns up to 30 times faster, so earlier
+  warm numbers were misleading). Frontier limits 10⁴ and unlimited never
+  abstract there: 33 to 45 ms on the solvable tasks, 146 to 263 ms on the
+  unsolvable one. Limit 1024 (slices 1 or 8, either drop hierarchy):
+  about 75 ms and 27 to 65 ms. Limit 256: 75 to 150 ms and 3 to 9 ms.
+  Merge-and-shrink perimeters (limit 1024) match limit 1024 at frontier
+  1024 and cost 1.3 s at 256. So abstraction pays for proving
+  unsolvability and costs about twice the time on these solvable tasks;
+  1024 is the compromise. On the tiny fixtures no setting abstracts
+  usefully. The machine was loaded (load about 18), so the numbers are
+  indicative only. Not done
   compared to Torralba et al.: time-based step estimates, a hierarchy
   chosen by abstract search cost, merge-and-shrink with real merge
   strategies and bisimulation shrinking.
@@ -468,6 +475,14 @@ crate needs one (see "Cross-crate needs").
   retrying; a search that outgrows its table grows it and later searches
   keep the larger one; no retry past the cap; `Config::for_task` fits
   every solvable fixture without a retry.
+- **Merge-and-shrink.** Unshrunk equals `h*` in both directions;
+  shrunk stays below `h*`, informs and loses information somewhere;
+  BDDA\* with it is optimal and its values stay below `h*` on every
+  reachable state in the sweeps; SymBA\* installs it and stays optimal.
+- **Backends.** 200 random functions agree with oxidd by truth table;
+  every search family, including canonical PDBs, merge-and-shrink and
+  conjunctive partitioning, gives the same results on both backends on
+  24 random tasks.
 - **Budgets.** Cut-offs at every budget from 0 to 39 expansions, with and
   without abstraction, report `lower_bound ≤ optimum ≤ best cost`.
 - **Unit tests.** Merged groups and conjunctive clusters step like the
@@ -489,6 +504,9 @@ crate needs one (see "Cross-crate needs").
   of 64 nodes 75 / 60. Later runs at load 18 varied by 2 to 3 times
   between identical configurations, so the schedules are compared by
   peak intermediate product size instead (see "Partitioning").
+  Criterion repeats each search on one compiled task, so its numbers are
+  warm reruns (the operation cache survives between iterations) and are
+  lower than cold first runs.
   A `random-walk` group runs the seed-0 tuning task (14 variables, 48
   operators, optimum 19): bidirectional Dijkstra 424 µs, SymBA\* with
   default parameters 426 µs, BDDA\* with merge-and-shrink (limit 1024)
@@ -516,7 +534,10 @@ crate needs one (see "Cross-crate needs").
    abstraction hierarchy.
 4. **Axioms**, following Speck et al. (2019). State-invariant (mutex)
    pruning when `sas-plus` provides mutex groups.
-5. **Merge-and-shrink** heuristics as BDD partitions.
+5. **Merge-and-shrink.** Done in a first form: linear merging and
+   h-preserving node-limited shrinking, for BDDA\* and as SymBA\*
+   perimeters. **Next:** other merge strategies, bisimulation, label
+   reduction.
 
 ## Cross-crate needs
 

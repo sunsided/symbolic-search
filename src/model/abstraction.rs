@@ -115,6 +115,10 @@ impl<B: Backend> Model<B> {
         max_subsets: usize,
     ) -> BackendResult<Partition<B>> {
         let b = &self.backend;
+        if patterns.is_empty() {
+            return Ok(Partition::zero(b));
+        }
+
         let pdbs = patterns
             .iter()
             .map(|pattern| self.pdb(pattern))
@@ -462,6 +466,19 @@ mod tests {
 
         assert!(informed > 0, "shrunk abstractions are all blind");
         assert!(weaker > 0, "shrinking never lost information");
+    }
+
+    /// No patterns give the blind heuristic.
+    #[test]
+    fn empty_collection_is_blind() {
+        let model = model(0);
+
+        assert!(
+            model
+                .canonical(&[], usize::MAX)
+                .unwrap()
+                .is_blind(model.backend())
+        );
     }
 
     /// Hand-checked cliques: a triangle `0-1-2`, an edge `2-3`, and the

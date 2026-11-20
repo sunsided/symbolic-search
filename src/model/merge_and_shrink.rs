@@ -28,7 +28,9 @@
 //! (h-preserving: no abstract distance changes for the merged states'
 //! classes at that point). If that is still too big, the two classes with
 //! the smallest distances are merged until the classes fit or one is left.
-//! Dead classes are only merged with dead classes by the first rule.
+//! The first rule merges dead classes only with each other; the second
+//! reaches the dead class last and then merges it into a live class (still
+//! admissible: merging classes only lowers distances).
 //!
 //! **Admissibility.** Every class list is the quotient of a projection by
 //! a partition of its states, so it is an abstraction of the task, and the
