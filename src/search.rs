@@ -264,29 +264,31 @@ pub enum AbstractionHierarchy {
     #[default]
     DropVariables,
     /// Each level drops one more bit of one variable, low bits first, which
-    /// merges that variable's values pairwise: a shrink step in the spirit
-    /// of merge-and-shrink, without bisimulation. One round drops the
+    /// merges that variable's values pairwise (value merging within one
+    /// variable; no variables are merged and no bisimulation is used). One round drops the
     /// lowest remaining bit of every non-goal variable, then the goal
     /// variables follow, so all variables coarsen evenly.
     DropBits,
 }
 
 impl Default for SymbaConfig {
-    /// Concrete and abstract node limits of 10⁴ nodes, slices of one
-    /// abstract expansion, the variable-dropping hierarchy, no budget.
+    /// Concrete and abstract node limits of 10⁴ nodes, slices of 8
+    /// abstract expansions, the variable-dropping hierarchy, no budget.
     ///
-    /// Tuned on the fixtures (`model::symba::tuning`, summed over
+    /// Checked on the fixtures (`model::symba::tuning`, summed over
     /// gripper-unit, gripper-costs and conditional-effects): frontiers there
     /// stay below 64 nodes, so every frontier limit from 64 up runs plain
-    /// bidirectional Dijkstra (16 expansions). When abstraction does kick in
-    /// (limit 16), slices of 1 need 20 expansions against 35 to 42 for
-    /// slices of 8 or unbounded ones, larger abstract limits never hurt, and
-    /// both hierarchies tie. 10⁴ keeps easy tasks free of abstract work.
+    /// bidirectional Dijkstra with 16 concrete expansions. With limit 16,
+    /// slices of 8 or unbounded slices save one concrete expansion (15) for
+    /// 20 to 27 abstract ones, slices of 1 save none (16 plus 4), and both
+    /// hierarchies tie. The fixtures are too small to tune these values;
+    /// they are a middle setting, and 10⁴ keeps easy tasks free of
+    /// abstract work.
     fn default() -> Self {
         Self {
             frontier_node_limit: 10_000,
             abstract_node_limit: 10_000,
-            abstract_slice: 1,
+            abstract_slice: 8,
             max_expansions: None,
             time_limit: None,
             hierarchy: AbstractionHierarchy::DropVariables,
@@ -970,3 +972,13 @@ impl<B: Backend> SymbolicTask<B> {
         }
     }
 }
+
+/// Compile-time check that tasks and heuristics on the default backend can
+/// be shared across threads, despite the retry cache's interior mutability.
+const _: () = {
+    /// Accepts only `Send + Sync` types.
+    const fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<SymbolicTask>();
+    assert_send_sync::<Heuristic>();
+};

@@ -22,15 +22,28 @@ pub struct Oxidd {
     literals: Vec<BCDDFunction>,
 }
 
-/// Maps an `oxidd` allocation failure onto the backend error.
-fn checked<T>(result: AllocResult<T>) -> BackendResult<T> {
-    result.map_err(|_| OutOfMemory)
+/// A set of states on the [`Oxidd`] backend: an opaque handle to a
+/// complement-edge BDD. Equality is semantic.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OxiddSet(BCDDFunction);
+
+/// A prebuilt quantification set on the [`Oxidd`] backend.
+#[derive(Clone)]
+pub struct OxiddVarSet(BCDDFunction);
+
+/// A prebuilt variable renaming on the [`Oxidd`] backend.
+pub struct OxiddRenaming(Subst<BCDDFunction>);
+
+/// Maps an `oxidd` allocation failure onto the backend error and wraps the
+/// function.
+fn checked(result: AllocResult<BCDDFunction>) -> BackendResult<OxiddSet> {
+    result.map(OxiddSet).map_err(|_| OutOfMemory)
 }
 
 impl Backend for Oxidd {
-    type Set = BCDDFunction;
-    type VarSet = BCDDFunction;
-    type Renaming = Subst<BCDDFunction>;
+    type Set = OxiddSet;
+    type VarSet = OxiddVarSet;
+    type Renaming = OxiddRenaming;
 
     fn new(num_vars: u32, capacity: Capacity) -> BackendResult<Self> {
         // One thread: the `multi-threading` feature is off.
@@ -41,83 +54,89 @@ impl Backend for Oxidd {
 
         Ok(Self {
             manager,
-            literals: checked(literals)?,
+            literals: literals.map_err(|_| OutOfMemory)?,
         })
     }
 
-    fn constant(&self, value: bool) -> Self::Set {
-        self.manager.with_manager_shared(|m| {
+    fn constant(&self, value: bool) -> OxiddSet {
+        OxiddSet(self.manager.with_manager_shared(|m| {
             if value {
                 BCDDFunction::t(m)
             } else {
                 BCDDFunction::f(m)
             }
-        })
+        }))
     }
 
-    fn var(&self, var: u32) -> Self::Set {
-        self.literals[var as usize].clone()
+    fn var(&self, var: u32) -> OxiddSet {
+        OxiddSet(self.literals[var as usize].clone())
     }
 
-    fn not(&self, a: &Self::Set) -> BackendResult<Self::Set> {
-        checked(a.not())
+    fn not(&self, a: &OxiddSet) -> BackendResult<OxiddSet> {
+        checked(a.0.not())
     }
 
-    fn and(&self, a: &Self::Set, b: &Self::Set) -> BackendResult<Self::Set> {
-        checked(a.and(b))
+    fn and(&self, a: &OxiddSet, b: &OxiddSet) -> BackendResult<OxiddSet> {
+        checked(a.0.and(&b.0))
     }
 
-    fn or(&self, a: &Self::Set, b: &Self::Set) -> BackendResult<Self::Set> {
-        checked(a.or(b))
+    fn or(&self, a: &OxiddSet, b: &OxiddSet) -> BackendResult<OxiddSet> {
+        checked(a.0.or(&b.0))
     }
 
     fn ite(
         &self,
-        cond: &Self::Set,
-        then: &Self::Set,
-        otherwise: &Self::Set,
-    ) -> BackendResult<Self::Set> {
-        checked(cond.ite(then, otherwise))
+        cond: &OxiddSet,
+        then: &OxiddSet,
+        otherwise: &OxiddSet,
+    ) -> BackendResult<OxiddSet> {
+        checked(cond.0.ite(&then.0, &otherwise.0))
     }
 
-    fn var_set(&self, vars: &[u32]) -> BackendResult<Self::VarSet> {
+    fn var_set(&self, vars: &[u32]) -> BackendResult<OxiddVarSet> {
         // oxidd takes quantified variables as a conjunction of positive literals.
-        vars.iter()
-            .try_fold(self.constant(true), |acc, &v| self.and(&acc, &self.var(v)))
+        let cube = vars
+            .iter()
+            .try_fold(self.constant(true), |acc, &v| self.and(&acc, &self.var(v)))?;
+
+        Ok(OxiddVarSet(cube.0))
     }
 
     fn and_exists(
         &self,
-        a: &Self::Set,
-        b: &Self::Set,
-        vars: &Self::VarSet,
-    ) -> BackendResult<Self::Set> {
-        checked(a.apply_exists(BooleanOperator::And, b, vars))
+        a: &OxiddSet,
+        b: &OxiddSet,
+        vars: &OxiddVarSet,
+    ) -> BackendResult<OxiddSet> {
+        checked(a.0.apply_exists(BooleanOperator::And, &b.0, &vars.0))
     }
 
-    fn exists(&self, a: &Self::Set, vars: &Self::VarSet) -> BackendResult<Self::Set> {
-        checked(a.exists(vars))
+    fn exists(&self, a: &OxiddSet, vars: &OxiddVarSet) -> BackendResult<OxiddSet> {
+        checked(a.0.exists(&vars.0))
     }
 
-    fn renaming(&self, from: &[u32], to: &[u32]) -> Self::Renaming {
+    fn renaming(&self, from: &[u32], to: &[u32]) -> OxiddRenaming {
         assert_eq!(from.len(), to.len(), "renaming needs one target per source");
-        Subst::new(from.to_vec(), to.iter().map(|&v| self.var(v)).collect())
+        OxiddRenaming(Subst::new(
+            from.to_vec(),
+            to.iter().map(|&v| self.var(v).0).collect(),
+        ))
     }
 
-    fn rename(&self, a: &Self::Set, renaming: &Self::Renaming) -> BackendResult<Self::Set> {
-        checked(a.substitute(renaming))
+    fn rename(&self, a: &OxiddSet, renaming: &OxiddRenaming) -> BackendResult<OxiddSet> {
+        checked(a.0.substitute(&renaming.0))
     }
 
-    fn is_empty(&self, a: &Self::Set) -> bool {
-        !a.satisfiable()
+    fn is_empty(&self, a: &OxiddSet) -> bool {
+        !a.0.satisfiable()
     }
 
-    fn node_count(&self, a: &Self::Set) -> usize {
-        a.node_count()
+    fn node_count(&self, a: &OxiddSet) -> usize {
+        a.0.node_count()
     }
 
-    fn pick(&self, a: &Self::Set) -> Option<Vec<bool>> {
-        let cube = a.pick_cube(|_, _, _| false)?;
+    fn pick(&self, a: &OxiddSet) -> Option<Vec<bool>> {
+        let cube = a.0.pick_cube(|_, _, _| false)?;
         let mut assignment: Vec<bool> = cube.into_iter().map(|b| b == OptBool::True).collect();
         // The cube may be shorter than the variable count when trailing levels are open.
         assignment.resize(self.literals.len(), false);

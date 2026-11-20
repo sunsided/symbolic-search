@@ -291,8 +291,8 @@ either direction and in the concrete or a projected space.
   applies `k` drop steps. `DropVariables` drops one variable per step
   (non-goal variables first, from the last id down); `DropBits` drops one
   low bit per step, round-robin over the non-goal variables and then the
-  goal variables, so all variables coarsen evenly (a shrink-only,
-  merge-and-shrink-like hierarchy without bisimulation). Each abstract
+  goal variables, so all variables coarsen evenly (value merging within
+  each variable; no variables are merged, no bisimulation). Each abstract
   search owns its projected space, so freezing a level frees its
   relations. When the side about to expand has a next bucket over
   `SymbaConfig::frontier_node_limit`, it first gets one slice of abstract
@@ -315,14 +315,16 @@ either direction and in the concrete or a projected space.
   proven optimal), `lower_bound` the bidirectional termination bound at
   the cut-off, which no unmet plan undercuts. `symba(limit)` sets
   both node limits to `limit` with unbounded slices and no budget.
-  Defaults (frontier and abstract limits 10⁴, slices of 1, dropping
-  variables) come from a grid over limits 16 to 10⁴, slices 1, 8 and
-  unbounded and both hierarchies on the three solvable fixtures
-  (`model::symba::tuning`, an ignored test): frontiers stay below 64
-  nodes there, so any limit from 64 up is plain bidirectional Dijkstra
-  (16 expansions in total); with limit 16, slices of 1 take 20 expansions
-  against 35 to 42 otherwise, and the hierarchies tie. The fixtures are
-  too small to tune the limits themselves; IPC tasks are needed for that. Not done
+  Defaults (frontier and abstract limits 10⁴, slices of 8, dropping
+  variables) were checked with a grid over limits 16 to 10⁴, slices 1, 8
+  and unbounded and both hierarchies on the three solvable fixtures
+  (`model::symba::tuning`, an ignored test that counts concrete and
+  abstract expansions): frontiers stay below 64 nodes there, so any limit
+  from 64 up is plain bidirectional Dijkstra (16 concrete expansions in
+  total). With limit 16, slices of 8 or unbounded slices save one concrete
+  expansion (15) for 20 to 27 abstract ones, slices of 1 save none (16
+  plus 4), and the hierarchies tie. The fixtures are too small to tune
+  the values; IPC tasks are needed for that. Not done
   compared to Torralba et al.: time-based step estimates, a hierarchy
   chosen by abstract search cost, merge-and-shrink with real merge
   strategies and bisimulation shrinking.
@@ -379,8 +381,9 @@ and only the operations the crate calls: constants, literals, `not`, `and`,
 `SymbolicTask<B = Oxidd>` and `Heuristic<B = Oxidd>` take the backend as a
 type parameter; `SymbolicTask::new` stays on the default backend (so type
 inference needs no annotation), and `SymbolicTask::<B>::with_backend`
-compiles on any other. The only oxidd type in a public signature is the
-`backend::Oxidd` wrapper itself; its fields stay private. Making the trait
+compiles on any other. No oxidd type appears in a public signature:
+`Oxidd`'s associated types are the opaque newtypes `OxiddSet`,
+`OxiddVarSet` and `OxiddRenaming`, so oxidd stays a private dependency. Making the trait
 public cost no restructuring: the model and searches were generic already.
 It exposes the trait as an extension point, so new required methods are
 breaking changes once outside implementations exist.
@@ -432,7 +435,16 @@ crate needs one (see "Cross-crate needs").
   them.
 - **Options.** Every oracle check runs under three configs: merged groups
   with the Gamer order, one relation per operator with the task order, and
-  conjunctive clusters of one conjunct each.
+  conjunctive clusters of one conjunct each in the IWLS95 order. The cost
+  sweeps also run SymBA\* with resumed, frozen and bit-dropping
+  abstractions, and every reported `Solution` cost is checked against
+  `Task::validate_plan`.
+- **Capacities.** Gripper compiles and searches from a 64-node table by
+  retrying; a search that outgrows its table grows it and later searches
+  keep the larger one; no retry past the cap; `Config::for_task` fits
+  every solvable fixture without a retry.
+- **Budgets.** Cut-offs at every budget from 0 to 39 expansions, with and
+  without abstraction, report `lower_bound ≤ optimum ≤ best cost`.
 - **Unit tests.** Merged groups and conjunctive clusters step like the
   union of their operators;
   SymBA\* with node limits 1 to 16 installs informative (not
@@ -446,9 +458,12 @@ crate needs one (see "Cross-crate needs").
 - **Bench.** `benches/search.rs` runs each search on `gripper-costs`, plus
   forward and backward Dijkstra under merged disjunctive groups, one
   disjunctive relation per operator, and conjunctive clusters (limits 0
-  and 64). Measured once (µs, forward / backward): 39 / 33, 125 / 76,
-  86 / 86, 75 / 60. Merged groups win on gripper; conjunctive clusters
-  beat per-operator disjunctive relations.
+  and 64, greedy and IWLS95 schedules). On an idle machine (greedy
+  schedule, before IWLS95 existed; µs, forward / backward): merged 39 /
+  33, per operator 125 / 76, conjunctive per conjunct 86 / 86, clusters
+  of 64 nodes 75 / 60. Later runs at load 18 varied by 2 to 3 times
+  between identical configurations, so the schedules are compared by
+  peak intermediate product size instead (see "Partitioning").
 - **Later.** Comparisons against Fast Downward's symbolic search or SymBA\*
   on translated IPC tasks, outside CI.
 
@@ -461,9 +476,12 @@ crate needs one (see "Cross-crate needs").
    cost; symbolic Dijkstra forward, backward and bidirectional with
    cost-aware reconstruction; BDDA\* and GBFS with partition heuristics;
    symbolic PDBs; SymBA\* with variable-dropping perimeter abstractions.
-3. **Partly done.** Conjunctive partitioning with early quantification;
-   SymBA\* with resumable abstract searches, separate node limits and a
-   budget. **Next:** search statistics (layers, nodes, peak); time-based
+3. **Partly done.** Conjunctive partitioning with greedy and IWLS95
+   schedules; SymBA\* with resumable abstract searches, separate node
+   limits, a budget that returns the best plan and a bound, and a
+   bit-dropping hierarchy; canonical PDB collections; capacities from the
+   task with retries; plans with costs; a public backend trait.
+   **Next:** search statistics (layers, nodes, peak); time-based
    direction choice; balanced-tree group merging; a better SymBA\*
    abstraction hierarchy.
 4. **Axioms**, following Speck et al. (2019). State-invariant (mutex)
@@ -516,7 +534,8 @@ crate needs one (see "Cross-crate needs").
 ## References
 
 Venues and DOIs were checked online, except for the first three entries
-(authors, title and year only).
+(authors, title and year only). The Ranjan et al. entry was read in full
+(definitions and weights of the IWLS95 benefit).
 
 - R. E. Bryant. Graph-based algorithms for Boolean function manipulation.
   1986.

@@ -19,7 +19,7 @@
 
 mod bcdd;
 
-pub use bcdd::Oxidd;
+pub use bcdd::{Oxidd, OxiddRenaming, OxiddSet, OxiddVarSet};
 
 /// The diagram manager ran out of node or cache capacity.
 ///

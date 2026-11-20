@@ -24,11 +24,18 @@
 //!   ([`SymbolicTask::canonical_pdbs`]) or explicit estimates
 //!   ([`SymbolicTask::heuristic`]).
 //! - `SymBA*`: bidirectional `A*` with perimeter abstractions that drop
-//!   variables or single bits ([`AbstractionHierarchy`]), resumable abstract searches, separate concrete and abstract
+//!   variables or merge values by dropping single bits
+//!   ([`AbstractionHierarchy`]), resumable abstract searches, separate concrete and abstract
 //!   node limits and an expansion and time budget ([`SymbaConfig`]).
 //!
 //! Every search reconstructs a plan as operator ids in execution order and
-//! returns it with its cost ([`Solution`]).
+//! returns it with its cost ([`Solution`]). `SymBA*` budgets report the
+//! best plan so far and a lower bound ([`Error::BudgetExhausted`]).
+//! [`Config::for_task`] sizes the node table from the task, and running out
+//! of nodes retries with a larger table up to
+//! [`Config::max_node_capacity`]. Conjunctive clusters use a greedy or the
+//! IWLS95 quantification schedule ([`Schedule`]). The BDD library sits
+//! behind the public [`backend::Backend`] trait.
 //!
 //! ## Planned
 //!

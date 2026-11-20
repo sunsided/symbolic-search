@@ -23,6 +23,11 @@ Pre-release (0.0.0); the API will change.
     and abstract node limits, and an expansion and time budget
     (`SymbaConfig`).
 
+  All searches return a `Solution` (plan and cost). SymBA\* budgets
+  report the best plan found so far and a lower bound.
+  `Config::for_task` sizes the node table from the task, and running out
+  of nodes retries with a larger table up to `Config::max_node_capacity`.
+  Conjunctive clusters use a greedy or the IWLS95 schedule.
   All searches reconstruct plans. BDDs come from
   [`oxidd`](https://crates.io/crates/oxidd) behind a public backend trait
   (`backend::Backend`); `SymbolicTask::with_backend` takes any

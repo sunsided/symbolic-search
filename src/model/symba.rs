@@ -73,6 +73,8 @@ pub(crate) struct Stats {
     /// Expansions paid for, concrete and abstract (one per hook call and
     /// per abstract expansion).
     pub expansions: u64,
+    /// The abstract part of [`Stats::expansions`].
+    pub abstract_expansions: u64,
 }
 
 /// The expansion and time budget of a run.
@@ -327,7 +329,10 @@ impl<'s, B: Backend> Hierarchy<'s, B> {
             return Ok(());
         };
 
-        let outcome = run_slice(&mut search, levels.config, budget)?;
+        let before = budget.spent;
+        let outcome = run_slice(&mut search, levels.config, budget);
+        stats.abstract_expansions += budget.spent - before;
+        let outcome = outcome?;
         let b = levels.model.backend();
         stats.frozen += usize::from(outcome == Outcome::TooHard);
         let heuristic = self.absorb(b, search, outcome)?;
@@ -501,17 +506,29 @@ mod tests {
         }
     }
 
-    /// Small slices and a small abstract limit make `SymBA*` both resume
-    /// and freeze abstract searches, and the plans still cost as much as
-    /// bidirectional Dijkstra's.
+    /// Small slices and a small abstract limit make `SymBA*` install,
+    /// resume and freeze abstract searches on both hierarchies, and the
+    /// plans still cost as much as bidirectional Dijkstra's.
     #[test]
     fn small_slices_resume_and_stay_optimal() {
+        for hierarchy in [
+            AbstractionHierarchy::DropVariables,
+            AbstractionHierarchy::DropBits,
+        ] {
+            small_slices_on(hierarchy);
+        }
+    }
+
+    /// [`small_slices_resume_and_stay_optimal`] on one hierarchy.
+    fn small_slices_on(hierarchy: AbstractionHierarchy) {
         let config = SymbaConfig {
             frontier_node_limit: 1,
             abstract_node_limit: 8,
             abstract_slice: 2,
+            hierarchy,
             ..SymbaConfig::default()
         };
+        let mut installed = 0;
         let (mut resumed, mut frozen) = (0, 0);
         for seed in 0..16 {
             let (task, model) = model(seed);
@@ -525,9 +542,11 @@ mod tests {
 
             resumed += stats.resumed;
             frozen += stats.frozen;
+            installed += stats.installed;
             assert_eq!(cost(&task, plan), cost(&task, reference), "seed {seed}");
         }
 
+        assert!(installed > 0, "{hierarchy:?}");
         assert!(
             resumed > 0 && frozen > 0,
             "resumed {resumed}, frozen {frozen}"
@@ -584,15 +603,24 @@ mod tests {
         let mut with_plan = 0;
         for seed in 0..64 {
             let (task, model) = model(seed);
-            let base = SymbaConfig {
-                frontier_node_limit: usize::MAX,
-                ..SymbaConfig::default()
-            };
-            let Some(optimum) = cost(&task, model.symba(&base).unwrap().0) else {
+            let Some(optimum) = cost(&task, model.symba(&SymbaConfig::default()).unwrap().0) else {
                 continue;
             };
 
-            for budget in 0..40 {
+            let plain = SymbaConfig {
+                frontier_node_limit: usize::MAX,
+                ..SymbaConfig::default()
+            };
+            let abstracting = SymbaConfig {
+                frontier_node_limit: 1,
+                abstract_node_limit: 8,
+                abstract_slice: 2,
+                ..SymbaConfig::default()
+            };
+            for (base, budget) in [plain, abstracting]
+                .into_iter()
+                .flat_map(|base| (0..40).map(move |budget| (base, budget)))
+            {
                 let config = SymbaConfig {
                     max_expansions: Some(budget),
                     ..base
@@ -640,7 +668,7 @@ mod tuning {
     }
 
     /// Grid search over `SymbaConfig` on the fixtures: prints, per config,
-    /// the summed expansions and the summed best-of-7 wall time. Run with
+    /// the summed concrete and abstract expansions and the summed best-of-7 wall time. Run with
     /// `cargo test --release --lib tuning -- --ignored --nocapture`; the
     /// numbers in `docs/design.md` come from it.
     #[test]
@@ -671,7 +699,7 @@ mod tuning {
                             hierarchy,
                             ..SymbaConfig::default()
                         };
-                        let (mut expansions, mut time) = (0, Duration::ZERO);
+                        let (mut expansions, mut abstract_work, mut time) = (0, 0, Duration::ZERO);
                         for (_, model) in &models {
                             let mut best = Duration::MAX;
                             for _ in 0..7 {
@@ -679,12 +707,14 @@ mod tuning {
                                 model.symba(&config).unwrap();
                                 best = best.min(start.elapsed());
                             }
-                            expansions += model.symba(&config).unwrap().1.expansions;
+                            let stats = model.symba(&config).unwrap().1;
+                            expansions += stats.expansions - stats.abstract_expansions;
+                            abstract_work += stats.abstract_expansions;
                             time += best;
                         }
 
                         eprintln!(
-                            "frontier {frontier_node_limit} abstract {abstract_node_limit} slice {abstract_slice} {hierarchy:?}: expansions {expansions} time {time:?}"
+                            "frontier {frontier_node_limit} abstract {abstract_node_limit} slice {abstract_slice} {hierarchy:?}: concrete {expansions} abstract {abstract_work} time {time:?}"
                         );
                     }
                 }
