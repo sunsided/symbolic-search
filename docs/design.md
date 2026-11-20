@@ -256,19 +256,29 @@ either direction and in the concrete or a projected space.
   and the rest is dead. The projection is the exact induced abstraction, so
   with conditional effects it can be more informed than
   `sas_plus::Projection`, which lets an uncertain effect fire or not.
-- **SymBA\* (simple).** Both sides start blind (bidirectional Dijkstra).
-  When the side about to expand has a next bucket over the node limit, an
-  abstraction that drops one more variable (non-goal variables first, from
-  the last id down) is built, and a blind abstract search runs in the
-  opposite direction: it expands at least its start, then stops once its
-  own next bucket passes the limit. A blind result is skipped. Closed
-  abstract states get their distance, all others the smallest open cost (the
-  perimeter), or dead when the abstract search ran out. The side's
-  heuristic becomes the maximum of the old one and the perimeter, and its
-  open is refiled. All of these are admissible and consistent, so the
-  bidirectional bound stays valid. Not done compared to Torralba et al.:
-  time-based step estimates, a hierarchy chosen by abstract search cost,
-  resuming abstract searches, merge-and-shrink abstractions.
+- **SymBA\*.** Both sides start blind (bidirectional Dijkstra). Each side
+  owns an abstraction hierarchy: level `k` drops `k` variables (non-goal
+  variables first, from the last id down), and projected spaces are built
+  on first use. When the side about to expand has a next bucket over
+  `SymbaConfig::frontier_node_limit`, it first gets one slice of abstract
+  work: its abstract search (blind, in the opposite direction) runs for
+  `abstract_slice` expansions and pauses. The search is kept and resumed on
+  the next slice instead of restarting. When its next bucket passes
+  `abstract_node_limit`, it is frozen and the next level starts; when it is
+  exhausted, it is exact for its abstraction and coarser levels cannot beat
+  it, so the side stops abstract work. Closed abstract states get their
+  distance, all others the smallest open cost (the perimeter), or dead when
+  the search ran out. The side's heuristic is the maximum of the frozen
+  perimeters and the current one; open is refiled under it, and blind
+  results are skipped. Perimeters at every pause point are admissible and
+  consistent, and so is the maximum, so the bidirectional bound stays
+  valid. A unit test pins that a search paused after every expansion ends
+  with the perimeter of an uninterrupted run. `max_expansions` and
+  `time_limit` cap concrete plus abstract expansions and fail with
+  `Error::BudgetExhausted`, never with "unsolvable". `symba(limit)` sets
+  both node limits to `limit` with unbounded slices and no budget. Not done
+  compared to Torralba et al.: time-based step estimates, a hierarchy
+  chosen by abstract search cost, merge-and-shrink abstractions.
 
 ## Backend comparison and choice
 
@@ -353,8 +363,9 @@ crate needs one (see "Cross-crate needs").
   staying inside valid codes.
 - **Costs.** An explicit-state Dijkstra (`tests/it/oracle.rs`) gives the
   optimal cost. Forward, backward and bidirectional Dijkstra and SymBA\*
-  (node limits 1 and 8, which abstract, and `usize::MAX`, which never
-  does) must return plans whose `Task::validate_plan` cost equals it, on
+  (node limits 1 and 8, which abstract, `usize::MAX`, which never
+  does, abstract searches paused after every expansion, and the default
+  `SymbaConfig`) must return plans whose `Task::validate_plan` cost equals it, on
   random sweeps with costs 1 to 5. Sweeps assert they saw trivial, solved
   and unsolvable tasks, and the default and wide sweeps also a task where
   the BFS plan is not cost-optimal. Hand-built tasks cover zero-cost
@@ -388,9 +399,11 @@ crate needs one (see "Cross-crate needs").
    cost; symbolic Dijkstra forward, backward and bidirectional with
    cost-aware reconstruction; BDDA\* and GBFS with partition heuristics;
    symbolic PDBs; SymBA\* with variable-dropping perimeter abstractions.
-3. **Next.** Search statistics (layers, nodes, peak); time-based direction
-   choice; balanced-tree group merging; a better SymBA\* abstraction
-   hierarchy.
+3. **Partly done.** Conjunctive partitioning with early quantification;
+   SymBA\* with resumable abstract searches, separate node limits and a
+   budget. **Next:** search statistics (layers, nodes, peak); time-based
+   direction choice; balanced-tree group merging; a better SymBA\*
+   abstraction hierarchy.
 4. **Axioms**, following Speck et al. (2019). State-invariant (mutex)
    pruning when `sas-plus` provides mutex groups.
 5. **Merge-and-shrink** heuristics as BDD partitions.

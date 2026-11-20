@@ -18,8 +18,10 @@ Pre-release (0.0.0); the API will change.
   - BDDA\* and symbolic greedy best-first search with heuristics stored as
     one BDD per `h` value, from symbolic pattern databases or explicit
     estimates;
-  - SymBA\* in a simple form: bidirectional A\* with perimeter abstractions
-    that drop variables.
+  - SymBA\*: bidirectional A\* with perimeter abstractions that drop
+    variables, resumable abstract searches per direction, separate concrete
+    and abstract node limits, and an expansion and time budget
+    (`SymbaConfig`).
 
   All searches reconstruct plans. BDDs come from
   [`oxidd`](https://crates.io/crates/oxidd) behind an internal backend trait.

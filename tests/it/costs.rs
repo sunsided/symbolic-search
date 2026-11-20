@@ -3,9 +3,19 @@
 
 use sas_plus::random::{RandomTaskParams, random_task};
 use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
-use symbolic_search::SymbolicTask;
+use symbolic_search::{SymbaConfig, SymbolicTask};
 
 use crate::{CONFIGS, SMALL, oracle, validated_cost};
+
+/// `SymBA*` parameters that abstract at once and pause abstract searches
+/// after every expansion, so they are resumed many times.
+const RESUMING: SymbaConfig = SymbaConfig {
+    frontier_node_limit: 1,
+    abstract_node_limit: 64,
+    abstract_slice: 1,
+    max_expansions: None,
+    time_limit: None,
+};
 
 /// Checks every cost-optimal search on `task`, under every config, against
 /// the oracle and returns the optimal plan cost (`None` when unsolvable).
@@ -20,6 +30,14 @@ pub fn check_costs(task: &Task) -> Option<u64> {
             ("symba, abstracting at once", symbolic.symba(1)),
             ("symba, abstracting later", symbolic.symba(8)),
             ("symba, never abstracting", symbolic.symba(usize::MAX)),
+            (
+                "symba, resuming abstract searches",
+                symbolic.symba_with(&RESUMING),
+            ),
+            (
+                "symba, default parameters",
+                symbolic.symba_with(&SymbaConfig::default()),
+            ),
         ];
         for (what, plan) in runs {
             let plan = plan.unwrap_or_else(|e| panic!("{what}: {e}"));

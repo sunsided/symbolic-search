@@ -5,7 +5,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use sas_plus::fdr::SasFile;
-use symbolic_search::{Config, Partitioning, SymbolicTask};
+use symbolic_search::{Config, Partitioning, SymbaConfig, SymbolicTask};
 
 /// Compiles the gripper-with-costs fixture with merged disjunctive groups.
 fn gripper() -> SymbolicTask {
@@ -44,6 +44,15 @@ fn searches(c: &mut Criterion) {
     });
     group.bench_function("astar_pdb", |b| b.iter(|| symbolic.astar(&pdb)));
     group.bench_function("symba", |b| b.iter(|| symbolic.symba(64)));
+    let resuming = SymbaConfig {
+        frontier_node_limit: 64,
+        abstract_node_limit: 64,
+        abstract_slice: 1,
+        ..SymbaConfig::default()
+    };
+    group.bench_function("symba_resuming", |b| {
+        b.iter(|| symbolic.symba_with(&resuming));
+    });
     group.finish();
 }
 

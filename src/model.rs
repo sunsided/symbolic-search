@@ -409,6 +409,7 @@ mod tests {
     use sas_plus::{Effect, Fact, Operator, State, Variable};
 
     use super::*;
+    use crate::SymbaConfig;
     use crate::backend::bcdd::Oxidd;
 
     /// A set in the test backend.
@@ -625,9 +626,15 @@ mod tests {
                 let task = random(seed);
                 let model = Model::<Oxidd>::new(&task, &tiny_config()).unwrap();
 
-                let (plan, count) = model.symba(limit).unwrap();
+                let config = SymbaConfig {
+                    frontier_node_limit: limit,
+                    abstract_node_limit: limit,
+                    abstract_slice: usize::MAX,
+                    ..SymbaConfig::default()
+                };
+                let (plan, stats) = model.symba(&config).unwrap();
 
-                installed += count;
+                installed += stats.installed;
                 if let Some(plan) = plan {
                     assert!(task.validate_plan(&plan).is_some());
                 }

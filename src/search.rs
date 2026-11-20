@@ -1,6 +1,7 @@
 //! The public entry point: a task compiled to BDDs, and its searches.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 
 use sas_plus::{Fact, OpId, State, Task, VarId};
 
@@ -92,6 +93,58 @@ impl Default for Config {
             merge_node_limit: 100_000,
             variable_order: VariableOrder::Gamer,
             partitioning: Partitioning::Disjunctive,
+        }
+    }
+}
+
+/// Parameters of [`SymbolicTask::symba_with`].
+///
+/// Build one with struct update syntax, so new fields do not break callers:
+///
+/// ```
+/// use core::time::Duration;
+/// use symbolic_search::SymbaConfig;
+///
+/// let config = SymbaConfig {
+///     abstract_slice: 4,
+///     time_limit: Some(Duration::from_secs(60)),
+///     ..SymbaConfig::default()
+/// };
+/// assert_eq!(config.max_expansions, None);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SymbaConfig {
+    /// Size, in BDD nodes, of the next concrete bucket above which the side
+    /// about to expand gets abstract work first.
+    pub frontier_node_limit: usize,
+    /// Size, in BDD nodes, of the next abstract bucket above which an
+    /// abstract search counts as too hard: it is frozen, its perimeter is
+    /// kept for good, and the next coarser abstraction starts.
+    pub abstract_node_limit: usize,
+    /// Abstract expansions per piece of abstract work. After that many, the
+    /// abstract search pauses, its current perimeter is installed, and it
+    /// resumes where it stopped the next time its side needs abstract work.
+    /// `usize::MAX` runs each abstract search until it is too hard or
+    /// exhausted; `0` counts as 1.
+    pub abstract_slice: usize,
+    /// Maximum number of expansions, concrete and abstract together;
+    /// `None` for no limit.
+    pub max_expansions: Option<u64>,
+    /// Wall-clock limit for the whole search, checked before every
+    /// expansion; `None` for no limit.
+    pub time_limit: Option<Duration>,
+}
+
+impl Default for SymbaConfig {
+    /// Concrete and abstract node limits of 10⁴ nodes, slices of 8 abstract
+    /// expansions, no budget.
+    fn default() -> Self {
+        Self {
+            frontier_node_limit: 10_000,
+            abstract_node_limit: 10_000,
+            abstract_slice: 8,
+            max_expansions: None,
+            time_limit: None,
         }
     }
 }
@@ -377,19 +430,10 @@ impl SymbolicTask {
             .best_first(Direction::Forward, partition, Strategy::Greedy)
     }
 
-    /// `SymBA*`: bidirectional symbolic A* that switches from concrete to
-    /// abstract search whenever a frontier grows past `frontier_node_limit`
-    /// BDD nodes.
-    ///
-    /// Both directions start blind. When the side about to expand has a
-    /// bigger next set than the limit, an abstract search in the opposite
-    /// direction runs on a domain abstraction that drops one more variable
-    /// (non-goal variables first). It expands at least its start, then stops
-    /// once its own next set passes the same limit. Its perimeter becomes
-    /// that side's heuristic (maximised with the previous one). The plan is
-    /// always cheapest; the limit only trades concrete for abstract work.
-    /// Small limits mean many short abstract searches with weak perimeters;
-    /// `usize::MAX` gives bidirectional Dijkstra.
+    /// `SymBA*` with the same node limit for concrete frontiers and abstract
+    /// searches, abstract searches run to that limit in one go, and no
+    /// budget. Shorthand for [`SymbolicTask::symba_with`]; `usize::MAX`
+    /// gives bidirectional Dijkstra.
     ///
     /// # Errors
     ///
@@ -423,8 +467,70 @@ impl SymbolicTask {
     /// }
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn symba(&self, frontier_node_limit: usize) -> Result<Option<Vec<OpId>>, Error> {
-        Ok(self.model.symba(frontier_node_limit)?.0)
+    pub fn symba(&self, node_limit: usize) -> Result<Option<Vec<OpId>>, Error> {
+        self.symba_with(&SymbaConfig {
+            frontier_node_limit: node_limit,
+            abstract_node_limit: node_limit,
+            abstract_slice: usize::MAX,
+            max_expansions: None,
+            time_limit: None,
+        })
+    }
+
+    /// `SymBA*`: bidirectional symbolic A* that does abstract work whenever
+    /// a frontier grows past [`SymbaConfig::frontier_node_limit`] BDD nodes.
+    ///
+    /// Both directions start blind. Each side owns a hierarchy of domain
+    /// abstractions that drop one more variable per level (non-goal
+    /// variables first) and keeps one abstract search, in the opposite
+    /// direction, alive at a time. When the side about to expand has a
+    /// bigger next bucket than the limit, its abstract search runs for
+    /// [`SymbaConfig::abstract_slice`] expansions (always at least its
+    /// start), then pauses and is resumed next time. Its perimeter, maximised
+    /// with those of frozen searches, becomes the side's heuristic. A search
+    /// whose next bucket passes [`SymbaConfig::abstract_node_limit`] is
+    /// frozen and the next level starts; an exhausted one ends the side's
+    /// abstract work, since coarser levels give weaker bounds. The plan is
+    /// always cheapest; the limits only trade concrete for abstract work.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::BudgetExhausted`] when [`SymbaConfig::max_expansions`] or
+    ///   [`SymbaConfig::time_limit`] runs out first.
+    /// - [`Error::OutOfMemory`] when the node table fills up.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+    /// use symbolic_search::{Config, Error, SymbaConfig, SymbolicTask};
+    ///
+    /// let op = |name: &str, from, to, cost| Operator {
+    ///     name: name.into(),
+    ///     pre: vec![Fact::new(0, from)],
+    ///     eff: vec![Effect::new(Fact::new(0, to))],
+    ///     cost,
+    /// };
+    /// let task = Task {
+    ///     variables: vec![Variable::new("at", 3)],
+    ///     operators: vec![op("direct", 0, 2, 5), op("a", 0, 1, 1), op("b", 1, 2, 1)],
+    ///     initial: State(vec![0]),
+    ///     goal: vec![Fact::new(0, 2)],
+    ///     axioms: vec![],
+    /// };
+    /// let config = Config { node_capacity: 1 << 10, cache_capacity: 1 << 8, ..Config::default() };
+    /// let symbolic = SymbolicTask::new(&task, config)?;
+    ///
+    /// let symba = SymbaConfig { frontier_node_limit: 1, abstract_slice: 1, ..SymbaConfig::default() };
+    /// let plan = symbolic.symba_with(&symba)?.expect("solvable");
+    /// assert_eq!(task.validate_plan(&plan), Some(2));
+    ///
+    /// let starved = SymbaConfig { max_expansions: Some(0), ..symba };
+    /// assert_eq!(symbolic.symba_with(&starved), Err(Error::BudgetExhausted));
+    /// # Ok::<(), symbolic_search::Error>(())
+    /// ```
+    pub fn symba_with(&self, config: &SymbaConfig) -> Result<Option<Vec<OpId>>, Error> {
+        Ok(self.model.symba(config)?.0)
     }
 
     /// The symbolic pattern database of `pattern`: the exact cost to the goal

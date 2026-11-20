@@ -29,6 +29,10 @@ pub enum Error {
     /// A [`crate::Heuristic`] was used with a task other than the one that
     /// built it.
     ForeignHeuristic,
+    /// A search ran out of the expansion or time budget it was given (see
+    /// [`crate::SymbaConfig`]) before it proved a plan optimal or the task
+    /// unsolvable.
+    BudgetExhausted,
 }
 
 impl fmt::Display for Error {
@@ -43,6 +47,7 @@ impl fmt::Display for Error {
                 write!(f, "invalid fact: variable {} = {}", fact.var, fact.value)
             }
             Self::ForeignHeuristic => write!(f, "the heuristic belongs to another symbolic task"),
+            Self::BudgetExhausted => write!(f, "the search budget is exhausted"),
         }
     }
 }

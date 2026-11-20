@@ -22,15 +22,16 @@
 //!   stored as one BDD per `h` value: symbolic pattern databases
 //!   ([`SymbolicTask::pdb`]) or explicit estimates
 //!   ([`SymbolicTask::heuristic`]).
-//! - `SymBA*` in a simple form: bidirectional `A*` with perimeter
-//!   abstractions that drop variables.
+//! - `SymBA*`: bidirectional `A*` with perimeter abstractions that drop
+//!   variables, resumable abstract searches, separate concrete and abstract
+//!   node limits and an expansion and time budget ([`SymbaConfig`]).
 //!
 //! Every search reconstructs a plan as operator ids in execution order.
 //!
 //! ## Planned
 //!
-//! Axioms, mutex pruning, merge-and-shrink heuristics, a resumable
-//! abstraction hierarchy for `SymBA*`. See `docs/design.md` in the
+//! Axioms, mutex pruning, merge-and-shrink heuristics, time-based step
+//! estimates for `SymBA*`. See `docs/design.md` in the
 //! repository.
 //!
 //! ## Example
@@ -81,4 +82,4 @@ mod search;
 
 pub use error::Error;
 pub use order::VariableOrder;
-pub use search::{Config, Heuristic, Partitioning, SymbolicTask};
+pub use search::{Config, Heuristic, Partitioning, SymbaConfig, SymbolicTask};

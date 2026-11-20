@@ -153,11 +153,6 @@ impl<'a, B: Backend> Frontier<'a, B> {
         Ok(())
     }
 
-    /// The current heuristic.
-    pub(crate) fn heuristic(&self) -> &Partition<B> {
-        &self.heuristic
-    }
-
     /// Files `states` at cost `g` into the open buckets, split by `h`.
     ///
     /// # Errors

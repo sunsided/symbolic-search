@@ -98,12 +98,27 @@ impl<B: Backend> Model<B> {
             }
         }
 
-        let pairs = frontier
-            .closed()
-            .iter()
-            .map(|(&g, set)| (g, set.clone()))
-            .collect();
-
-        Partition::from_overlapping(b, pairs, frontier.min_g())
+        perimeter_of(b, &frontier)
     }
+}
+
+/// The heuristic for the opposite direction that the blind abstract
+/// `frontier` gives at this point: closed states get their abstract
+/// distance, all other states the smallest open cost, or are dead ends when
+/// open is empty. Admissible and consistent at every pause point.
+///
+/// # Errors
+///
+/// Out of memory in the backend.
+pub(crate) fn perimeter_of<B: Backend>(
+    b: &B,
+    frontier: &Frontier<'_, B>,
+) -> BackendResult<Partition<B>> {
+    let pairs = frontier
+        .closed()
+        .iter()
+        .map(|(&g, set)| (g, set.clone()))
+        .collect();
+
+    Partition::from_overlapping(b, pairs, frontier.min_g())
 }
