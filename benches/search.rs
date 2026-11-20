@@ -1,4 +1,5 @@
-//! Benchmarks of the symbolic searches on the gripper-with-costs fixture.
+//! Benchmarks of the symbolic searches on the gripper-with-costs fixture
+//! and on a larger random-walk task.
 //!
 //! Each iteration runs one full search on an already compiled task, so the
 //! numbers measure images, preimages, bucket handling and reconstruction.
@@ -125,5 +126,67 @@ fn partitionings(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, searches, partitionings);
+/// A random task with 14 variables and 48 operators whose goal is 6 facts of
+/// the state a 60-step random walk reaches (optimal cost 19 at seed 0); the
+/// same generator as the crate's `large_task` tuning helper.
+fn random_walk_task(seed: u64) -> sas_plus::Task {
+    let params = sas_plus::random::RandomTaskParams {
+        num_vars: 14,
+        max_domain: 4,
+        num_ops: 48,
+        ..sas_plus::random::RandomTaskParams::default()
+    };
+    let mut task = sas_plus::random::random_task(seed, params);
+    let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut next = move |n: usize| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        usize::try_from(rng % u64::try_from(n).unwrap()).unwrap()
+    };
+
+    let mut state = task.initial_state();
+    for _ in 0..60 {
+        let applicable: Vec<_> = task.applicable_operators(&state).collect();
+        if applicable.is_empty() {
+            break;
+        }
+        state = task.apply(applicable[next(applicable.len())], &state);
+    }
+
+    let mut vars: Vec<usize> = (0..task.variables.len()).collect();
+    task.goal = (0..6)
+        .map(|_| vars.remove(next(vars.len())))
+        .map(|var| sas_plus::Fact::new(var, state.0[var]))
+        .collect();
+
+    task
+}
+
+/// Cost-optimal searches on the random-walk task: blind bidirectional,
+/// `SymBA*` with default parameters, and `BDDA*` with merge-and-shrink and
+/// canonical singleton PDBs.
+fn random_walk(c: &mut Criterion) {
+    let task = random_walk_task(0);
+    let symbolic = SymbolicTask::new(&task, Config::for_task(&task)).expect("task compiles");
+    let shrunk = symbolic.merge_and_shrink(1024).expect("m&s fits");
+    let singles: Vec<Vec<usize>> = (0..task.variables.len()).map(|v| vec![v]).collect();
+    let canonical = symbolic.canonical_pdbs(&singles).expect("pdbs fit");
+    let mut group = c.benchmark_group("random-walk");
+    group.sample_size(10);
+
+    group.bench_function("bidirectional_dijkstra", |b| {
+        b.iter(|| symbolic.bidirectional_dijkstra());
+    });
+    group.bench_function("symba_default", |b| {
+        b.iter(|| symbolic.symba_with(&SymbaConfig::default()));
+    });
+    group.bench_function("astar_merge_and_shrink", |b| {
+        b.iter(|| symbolic.astar(&shrunk));
+    });
+    group.bench_function("astar_canonical", |b| b.iter(|| symbolic.astar(&canonical)));
+    group.finish();
+}
+
+criterion_group!(benches, searches, partitionings, random_walk);
 criterion_main!(benches);

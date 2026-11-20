@@ -684,6 +684,161 @@ mod tuning {
             .collect()
     }
 
+    /// Random tasks large enough that frontiers outgrow small node limits:
+    /// 14 variables with domains up to 4, 48 operators, costs 1 to 5, no
+    /// conditional effects. The goal is replaced by 6 facts of the state a
+    /// 60-step random walk from the initial state reaches, so the task is
+    /// solvable and its goal is usually far away.
+    pub(crate) fn large_task(seed: u64) -> sas_plus::Task {
+        let params = sas_plus::random::RandomTaskParams {
+            num_vars: 14,
+            max_domain: 4,
+            num_ops: 48,
+            ..sas_plus::random::RandomTaskParams::default()
+        };
+        let mut task = sas_plus::random::random_task(seed, params);
+        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move |n: usize| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            usize::try_from(rng % u64::try_from(n).unwrap()).unwrap()
+        };
+
+        let mut state = task.initial_state();
+        for _ in 0..60 {
+            let applicable: Vec<_> = task.applicable_operators(&state).collect();
+            if applicable.is_empty() {
+                break;
+            }
+            state = task.apply(applicable[next(applicable.len())], &state);
+        }
+
+        let mut vars: Vec<usize> = (0..task.variables.len()).collect();
+        let goal: Vec<sas_plus::Fact> = (0..6)
+            .map(|_| vars.remove(next(vars.len())))
+            .map(|var| sas_plus::Fact::new(var, state.0[var]))
+            .collect();
+        task.goal = goal;
+
+        task
+    }
+
+    /// A table big enough for [`large_task`] searches (about 100 MiB).
+    fn large_config() -> Config {
+        Config {
+            node_capacity: 1 << 22,
+            cache_capacity: 1 << 18,
+            ..Config::default()
+        }
+    }
+
+    /// Prints, per seed of [`large_task`], whether it is solvable, its
+    /// optimal cost, the concrete expansions of bidirectional Dijkstra and
+    /// the largest next bucket it saw, to pick benchmark tasks.
+    #[test]
+    #[ignore = "measurement, not a check"]
+    fn survey_large_tasks() {
+        for seed in 0..40 {
+            let task = large_task(seed);
+            let model = Model::<Oxidd>::new(&task, &large_config()).unwrap();
+            let start = Instant::now();
+            let plain = SymbaConfig {
+                frontier_node_limit: usize::MAX,
+                ..SymbaConfig::default()
+            };
+            let Ok((solution, stats)) = model.symba(&plain) else {
+                eprintln!("seed {seed}: out of memory");
+                continue;
+            };
+            eprintln!(
+                "seed {seed}: cost {:?} expansions {} time {:?}",
+                solution.map(|s| s.cost),
+                stats.expansions,
+                start.elapsed()
+            );
+        }
+    }
+
+    /// Grid search over `SymbaConfig` on the large tasks: six random-walk
+    /// tasks ([`large_task`] seeds 0, 1, 2, 9, 12 and 35, the slowest of
+    /// the survey) and one unsolvable task (the plain
+    /// generator at seed 10, whose state space must be exhausted). Prints
+    /// summed concrete and abstract expansions and best-of-3 wall time.
+    /// Run with `cargo test --release --lib tune_large -- --ignored
+    /// --nocapture`; `docs/design.md` records the numbers.
+    #[test]
+    #[ignore = "measurement, not a check"]
+    fn tune_large_defaults() {
+        let unsolvable = sas_plus::random::random_task(
+            10,
+            sas_plus::random::RandomTaskParams {
+                num_vars: 14,
+                max_domain: 4,
+                num_ops: 48,
+                ..sas_plus::random::RandomTaskParams::default()
+            },
+        );
+        let tasks: Vec<_> = [0, 1, 2, 9, 12, 35]
+            .into_iter()
+            .map(large_task)
+            .chain([unsolvable])
+            .collect();
+        let models: Vec<_> = tasks
+            .iter()
+            .map(|task| Model::<Oxidd>::new(task, &large_config()).unwrap())
+            .collect();
+
+        let mut configs = Vec::new();
+        for frontier_node_limit in [256, 1024, 10_000, usize::MAX] {
+            configs.push(SymbaConfig {
+                frontier_node_limit,
+                hierarchy: AbstractionHierarchy::MergeAndShrink { node_limit: 1024 },
+                ..SymbaConfig::default()
+            });
+            for abstract_node_limit in [1024, 10_000] {
+                for abstract_slice in [1, 8] {
+                    for hierarchy in [
+                        AbstractionHierarchy::DropVariables,
+                        AbstractionHierarchy::DropBits,
+                    ] {
+                        configs.push(SymbaConfig {
+                            frontier_node_limit,
+                            abstract_node_limit,
+                            abstract_slice,
+                            hierarchy,
+                            ..SymbaConfig::default()
+                        });
+                    }
+                }
+            }
+        }
+
+        for config in configs {
+            let (mut concrete, mut abstract_work, mut time) = (0, 0, Duration::ZERO);
+            for model in &models {
+                let mut best = Duration::MAX;
+                let mut stats = Stats::default();
+                for _ in 0..3 {
+                    let start = Instant::now();
+                    stats = model.symba(&config).unwrap().1;
+                    best = best.min(start.elapsed());
+                }
+                concrete += stats.expansions - stats.abstract_expansions;
+                abstract_work += stats.abstract_expansions;
+                time += best;
+            }
+
+            eprintln!(
+                "frontier {} abstract {} slice {} {:?}: concrete {concrete} abstract {abstract_work} time {time:?}",
+                config.frontier_node_limit,
+                config.abstract_node_limit,
+                config.abstract_slice,
+                config.hierarchy
+            );
+        }
+    }
+
     /// Grid search over `SymbaConfig` on the fixtures: prints, per config,
     /// the summed concrete and abstract expansions and the summed best-of-7 wall time. Run with
     /// `cargo test --release --lib tuning -- --ignored --nocapture`; the

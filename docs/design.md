@@ -331,16 +331,19 @@ either direction and in the concrete or a projected space.
   proven optimal), `lower_bound` the bidirectional termination bound at
   the cut-off, which no unmet plan undercuts. `symba(limit)` sets
   both node limits to `limit` with unbounded slices and no budget.
-  Defaults (frontier and abstract limits 10⁴, slices of 8, dropping
-  variables) were checked with a grid over limits 16 to 10⁴, slices 1, 8
-  and unbounded and both hierarchies on the three solvable fixtures
-  (`model::symba::tuning`, an ignored test that counts concrete and
-  abstract expansions): frontiers stay below 64 nodes there, so any limit
-  from 64 up is plain bidirectional Dijkstra (16 concrete expansions in
-  total). With limit 16, slices of 8 or unbounded slices save one concrete
-  expansion (15) for 20 to 27 abstract ones, slices of 1 save none (16
-  plus 4), and the hierarchies tie. The fixtures are too small to tune
-  the values; IPC tasks are needed for that. Not done
+  Defaults (frontier and abstract limits 1024, slices of 8, dropping
+  variables) come from `model::symba::tuning::tune_large_defaults`, an
+  ignored test over seven random tasks with 14 variables, domains up to 4
+  and 48 operators: six solvable ones whose goal is 6 facts of the end of
+  a 60-step random walk (optimal costs 11 to 19) and one unsolvable one.
+  Summed best-of-3 times: frontier limit 1024 took 6.4 ms (110 concrete
+  and 2 abstract expansions), 256 took 7.1 to 21.8 ms (103 to 125
+  concrete, 11 to 50 abstract), 10⁴ and unlimited never abstract and took
+  7.8 to 11 ms (138 concrete). Abstract limits 1024 and 10⁴ and the two
+  drop hierarchies tie; merge-and-shrink perimeters (limit 1024) cost 8 ms
+  to 1.7 s. On the tiny fixtures, frontiers stay below 64 nodes and no
+  setting abstracts usefully. The machine was loaded (load about 18), so
+  the 20 % margins are indicative only. Not done
   compared to Torralba et al.: time-based step estimates, a hierarchy
   chosen by abstract search cost, merge-and-shrink with real merge
   strategies and bisimulation shrinking.
@@ -486,6 +489,11 @@ crate needs one (see "Cross-crate needs").
   of 64 nodes 75 / 60. Later runs at load 18 varied by 2 to 3 times
   between identical configurations, so the schedules are compared by
   peak intermediate product size instead (see "Partitioning").
+  A `random-walk` group runs the seed-0 tuning task (14 variables, 48
+  operators, optimum 19): bidirectional Dijkstra 424 µs, SymBA\* with
+  default parameters 426 µs, BDDA\* with merge-and-shrink (limit 1024)
+  688 µs and with canonical singleton PDBs 9.4 ms per search (heuristic
+  construction excluded).
 - **Later.** Comparisons against Fast Downward's symbolic search or SymBA\*
   on translated IPC tasks, outside CI.
 
