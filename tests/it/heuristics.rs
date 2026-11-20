@@ -55,13 +55,15 @@ fn singletons(task: &Task) -> Vec<Vec<VarId>> {
     (0..task.variables.len()).map(|var| vec![var]).collect()
 }
 
-/// Checks the canonical heuristic of the singleton patterns on every
-/// reachable state: at most `h*`, dead only on real dead ends, at least
-/// every single PDB.
+/// Checks the canonical heuristic of the singleton patterns and the
+/// merge-and-shrink heuristic on every reachable state: at most `h*`, dead
+/// only on real dead ends, and the canonical one at least every single
+/// PDB.
 fn check_canonical_values(task: &Task) {
     let symbolic = SymbolicTask::new(task, SMALL).expect("task compiles");
     let patterns = singletons(task);
     let canonical = symbolic.canonical_pdbs(&patterns).expect("pdbs fit");
+    let shrunk = symbolic.merge_and_shrink(16).expect("m&s fits");
     let singles: Vec<Heuristic> = patterns
         .iter()
         .map(|p| symbolic.pdb(p).expect("pdb fits"))
@@ -69,6 +71,15 @@ fn check_canonical_values(task: &Task) {
     let h_star = task.perfect_heuristic();
 
     for state in oracle::reachable_states(task) {
+        let m = symbolic.evaluate(&shrunk, &state).expect("fits");
+        match m {
+            Some(m) => assert!(
+                h_star(&state).is_none_or(|star| m <= star),
+                "m&s admissible"
+            ),
+            None => assert!(h_star(&state).is_none(), "m&s: only real dead ends"),
+        }
+
         let h = symbolic.evaluate(&canonical, &state).expect("fits");
         match h {
             Some(h) => assert!(h_star(&state).is_none_or(|star| h <= star), "admissible"),
@@ -93,7 +104,9 @@ fn check_heuristic_search(task: &Task) -> Option<u64> {
         let canonical = symbolic
             .canonical_pdbs(&singletons(task))
             .expect("pdbs fit");
+        let shrunk = symbolic.merge_and_shrink(16).expect("m&s fits");
         let runs = [
+            ("astar with merge-and-shrink", symbolic.astar(&shrunk)),
             ("astar with pdb", symbolic.astar(&pdb)),
             ("astar with canonical pdbs", symbolic.astar(&canonical)),
             (

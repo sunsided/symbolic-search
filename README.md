@@ -17,9 +17,12 @@ Pre-release (0.0.0); the API will change.
     zero costs included);
   - BDDA\* and symbolic greedy best-first search with heuristics stored as
     one BDD per `h` value, from symbolic pattern databases, canonical PDB
-    collections (maximum over additive subsets) or explicit estimates;
+    collections (maximum over additive subsets, capped), symbolic
+    merge-and-shrink (linear merging, h-preserving node-limited shrinking)
+    or explicit estimates;
   - SymBA\*: bidirectional A\* with perimeter abstractions that drop
-    variables or single bits (value merging), resumable abstract searches per direction, separate concrete
+    variables or single bits (value merging), or merge-and-shrink
+    perimeters, resumable abstract searches per direction, separate concrete
     and abstract node limits, and an expansion and time budget
     (`SymbaConfig`).
 
@@ -33,7 +36,7 @@ Pre-release (0.0.0); the API will change.
   (`backend::Backend`, sealed); `SymbolicTask::with_backend` also runs on
   `backend::ReferenceBdd`, a plain-Rust BDD that cross-checks oxidd.
 - Not done: axioms (rejected with `Error::Axioms`), mutex pruning,
-  full merge-and-shrink (merge strategies, bisimulation shrinking).
+  non-linear merge strategies, exact bisimulation and label reduction.
 
 See [`docs/design.md`](docs/design.md) for the design and milestones.
 

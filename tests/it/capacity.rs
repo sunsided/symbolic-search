@@ -56,6 +56,36 @@ fn a_search_retry_is_remembered() {
     assert!(symbolic.node_capacity() >= grown);
 }
 
+/// Heuristics built in a table too small for them are built in a grown
+/// one, and heuristic searches and evaluation rebuild them there.
+#[test]
+fn heuristic_searches_retry_in_a_grown_table() {
+    let task = fixture("gripper-costs");
+    let grew = (64..4096).step_by(8).find_map(|nodes| {
+        let config = Config {
+            node_capacity: nodes,
+            cache_capacity: 1 << 4,
+            ..SMALL
+        };
+        let symbolic = SymbolicTask::new(&task, config).ok()?;
+        let before = symbolic.node_capacity();
+        let pdb = symbolic
+            .canonical_pdbs(&[vec![0], vec![1]])
+            .expect("retries fit");
+        let solution = symbolic.astar(&pdb).expect("retries fit");
+        (symbolic.node_capacity() > before).then_some((symbolic, pdb, solution))
+    });
+
+    let (symbolic, pdb, solution) = grew.expect("some table fits the task but not the heuristic");
+    assert_eq!(solution.map(|s| s.cost), Some(7));
+    let greedy = symbolic.greedy(&pdb).expect("fits").expect("solvable");
+    assert_eq!(validated_cost(&task, &greedy, "greedy"), greedy.cost);
+    let h = symbolic.evaluate(&pdb, &task.initial).expect("fits");
+    let small = SymbolicTask::new(&task, SMALL).unwrap();
+    let reference = small.canonical_pdbs(&[vec![0], vec![1]]).unwrap();
+    assert_eq!(h, small.evaluate(&reference, &task.initial).unwrap());
+}
+
 /// Without room to grow, running out of nodes is an error.
 #[test]
 fn no_retry_past_the_cap() {

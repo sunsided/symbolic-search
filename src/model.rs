@@ -21,6 +21,7 @@ mod best_first;
 mod bidirectional;
 pub(crate) mod frontier;
 pub(crate) mod heuristic;
+mod merge_and_shrink;
 pub(crate) mod space;
 mod symba;
 
@@ -32,6 +33,9 @@ use crate::relation::{self, Relation};
 use crate::{Config, Error, Partitioning, Solution};
 use frontier::Frontier;
 use space::Space;
+
+/// Source of [`Model`] ids.
+static NEXT_MODEL_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Search direction of one symbolic step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +79,9 @@ struct BackStep<S> {
 
 /// A SAS+ task compiled to decision diagrams on backend `B`.
 pub(crate) struct Model<B: Backend> {
+    /// Unique id of this model and its manager; heuristics remember which
+    /// manager their BDDs live in.
+    id: u64,
     /// The diagram manager that owns every set below.
     backend: B,
     /// Bit layout of the task's variables.
@@ -143,6 +150,7 @@ impl<B: Backend> Model<B> {
         goal_vars.dedup();
 
         Ok(Self {
+            id: NEXT_MODEL_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
             backend,
             encoding,
             operators,
@@ -153,6 +161,11 @@ impl<B: Backend> Model<B> {
             },
             goal_vars,
         })
+    }
+
+    /// The unique id of this model's manager.
+    pub(crate) fn id(&self) -> u64 {
+        self.id
     }
 
     /// The diagram manager.

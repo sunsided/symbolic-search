@@ -26,6 +26,12 @@ const FREEZING: SymbaConfig = SymbaConfig {
     ..RESUMING
 };
 
+/// [`RESUMING`] with merge-and-shrink perimeters.
+const MERGING: SymbaConfig = SymbaConfig {
+    hierarchy: AbstractionHierarchy::MergeAndShrink { node_limit: 16 },
+    ..RESUMING
+};
+
 /// [`FREEZING`] on the bit-dropping hierarchy.
 const SHRINKING: SymbaConfig = SymbaConfig {
     hierarchy: AbstractionHierarchy::DropBits,
@@ -54,6 +60,7 @@ pub fn check_costs(task: &Task) -> Option<u64> {
                 symbolic.symba_with(&FREEZING),
             ),
             ("symba, dropping bits", symbolic.symba_with(&SHRINKING)),
+            ("symba, merge-and-shrink", symbolic.symba_with(&MERGING)),
         ];
         for (what, plan) in runs {
             let plan = plan.unwrap_or_else(|e| panic!("{what}: {e}"));

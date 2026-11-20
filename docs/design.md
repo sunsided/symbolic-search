@@ -276,6 +276,20 @@ either direction and in the concrete or a projected space.
   variable to valid codes), so distances stay admissible and consistent.
   Unit tests check every level of the bit hierarchy against `h*` and
   against the level before, on random tasks with domains up to 7.
+- **Merge-and-shrink.** `model::merge_and_shrink` keeps an abstraction
+  as disjoint classes (BDDs over the merged variables' bits). Linear merge
+  (goal variables, then the rest, by id) splits every class by the values
+  of the next variable; when the classes need more than the node limit,
+  classes of equal abstract distance merge (h-preserving), then the two
+  with the smallest distances until they fit. Distances come from a
+  Dijkstra over classes in the projection onto the merged variables that
+  settles a whole bucket of classes per step. The final distances are
+  exact in the final abstraction, so the heuristic is admissible and
+  consistent; unshrunk it equals `h*` (unit-tested in both directions).
+  `SymbolicTask::merge_and_shrink` exposes it for BDDA\*, and
+  `AbstractionHierarchy::MergeAndShrink` installs it as each side's
+  perimeter once that side needs abstract work. Not done: other merge
+  strategies, exact bisimulation, label reduction.
 - **PDB collections.** `SymbolicTask::canonical_pdbs` builds one PDB per
   pattern and combines them canonically: the maximum, over all maximal
   cliques of the additivity graph (two patterns are additive when no
@@ -285,7 +299,9 @@ either direction and in the concrete or a projected space.
   check, on every reachable state of random tasks, `h ≤ h*`, dead only on
   real dead ends, at least every single PDB, and strictly more than their
   maximum on some task; `BDDA*` with the singleton-pattern collection is
-  optimal in the integration sweeps.
+  optimal in the integration sweeps. Enumeration stops past
+  `max_subsets` maximal cliques (default 64) and falls back to the
+  maximum of the single PDBs.
 - **SymBA\*.** Both sides start blind (bidirectional Dijkstra). Each side
   owns an abstraction hierarchy (`SymbaConfig::hierarchy`): level `k`
   applies `k` drop steps. `DropVariables` drops one variable per step
@@ -530,10 +546,11 @@ crate needs one (see "Cross-crate needs").
   to 2¹²..2²²), and an `OutOfMemory` while compiling or in a search
   without a heuristic argument recompiles with doubled capacities up to
   `Config::max_node_capacity` and reruns; the grown model is kept for
-  later searches. `astar`, `greedy`, `pdb` and `evaluate` do not retry,
-  because heuristic BDDs live in the original manager. Is the estimate's
-  shape right for IPC tasks, and should heuristics be rebuilt in the grown
-  manager instead?
+  later searches. Heuristics remember how they were built (pattern,
+  collection, estimates, merge-and-shrink limit) and the manager they live
+  in; `astar`, `greedy`, `evaluate` and the heuristic constructors retry
+  too and rebuild the heuristic in the grown manager (on every call, for
+  now). Is the estimate's shape right for IPC tasks?
 - Default `merge_node_limit` 100 000 (SymBA\*'s value) and Gamer as the
   default order: keep, or tune on IPC tasks?
 

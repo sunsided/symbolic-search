@@ -102,18 +102,30 @@ impl<B: Backend> Model<B> {
     /// single PDBs. Patterns must hold valid variable ids; no patterns give
     /// the blind heuristic.
     ///
+    /// When the additivity graph has more than `max_subsets` maximal
+    /// cliques (their number can grow exponentially), the enumeration stops
+    /// and the result falls back to the maximum of the single PDBs.
+    ///
     /// # Errors
     ///
     /// Out of memory in the backend.
-    pub(crate) fn canonical(&self, patterns: &[Vec<VarId>]) -> BackendResult<Partition<B>> {
+    pub(crate) fn canonical(
+        &self,
+        patterns: &[Vec<VarId>],
+        max_subsets: usize,
+    ) -> BackendResult<Partition<B>> {
         let b = &self.backend;
         let pdbs = patterns
             .iter()
             .map(|pattern| self.pdb(pattern))
             .collect::<BackendResult<Vec<_>>>()?;
 
+        let singles = || (0..patterns.len()).map(|i| vec![i]).collect();
+        let cliques =
+            maximal_cliques(&self.additivity(patterns), max_subsets).unwrap_or_else(singles);
+
         let mut best: Option<Partition<B>> = None;
-        for clique in maximal_cliques(&self.additivity(patterns)) {
+        for clique in cliques {
             let mut sum = pdbs[clique[0]].clone();
             for &i in &clique[1..] {
                 sum = sum.sum(b, &pdbs[i])?;
@@ -183,33 +195,50 @@ impl<B: Backend> Model<B> {
 }
 
 /// The maximal cliques of the undirected graph `adjacent` (a symmetric
-/// matrix), by Bron–Kerbosch with pivoting. Every vertex is in at least
-/// one clique; isolated vertices are cliques of one.
-fn maximal_cliques(adjacent: &[Vec<bool>]) -> Vec<Vec<usize>> {
+/// matrix), by Bron–Kerbosch with pivoting, or `None` when there are more
+/// than `limit`. Every vertex is in at least one clique; isolated vertices
+/// are cliques of one.
+fn maximal_cliques(adjacent: &[Vec<bool>], limit: usize) -> Option<Vec<Vec<usize>>> {
     let mut cliques = Vec::new();
-    bron_kerbosch(
+    let complete = bron_kerbosch(
         adjacent,
         &mut Vec::new(),
         (0..adjacent.len()).collect(),
         Vec::new(),
-        &mut cliques,
+        &mut Cliques {
+            found: &mut cliques,
+            limit,
+        },
     );
 
-    cliques
+    complete.then_some(cliques)
+}
+
+/// Where [`bron_kerbosch`] records cliques, and how many it may record.
+struct Cliques<'c> {
+    /// The maximal cliques found so far.
+    found: &'c mut Vec<Vec<usize>>,
+    /// The most cliques to record before giving up.
+    limit: usize,
 }
 
 /// One Bron–Kerbosch step: extends `clique` by candidates `p`, skipping
 /// cliques already covered by `x`, and records maximal ones in `out`.
+/// Returns `false` once `out` would exceed its limit.
 fn bron_kerbosch(
     adjacent: &[Vec<bool>],
     clique: &mut Vec<usize>,
     p: Vec<usize>,
     mut x: Vec<usize>,
-    out: &mut Vec<Vec<usize>>,
-) {
+    out: &mut Cliques<'_>,
+) -> bool {
     if p.is_empty() && x.is_empty() {
-        out.push(clique.clone());
-        return;
+        if out.found.len() >= out.limit {
+            return false;
+        }
+
+        out.found.push(clique.clone());
+        return true;
     }
 
     let pivot = p
@@ -226,11 +255,17 @@ fn bron_kerbosch(
     for v in candidates {
         let neighbours = |set: &[usize]| set.iter().copied().filter(|&w| adjacent[v][w]).collect();
         clique.push(v);
-        bron_kerbosch(adjacent, clique, neighbours(&p), neighbours(&x), out);
+        let complete = bron_kerbosch(adjacent, clique, neighbours(&p), neighbours(&x), out);
         clique.pop();
+        if !complete {
+            return false;
+        }
+
         p.retain(|&w| w != v);
         x.push(v);
     }
+
+    true
 }
 
 /// The heuristic for the opposite direction that the blind abstract
@@ -372,7 +407,8 @@ mod tests {
             let model = model(seed);
             let b = model.backend();
             let patterns: Vec<Vec<VarId>> = (0..model.num_vars()).map(|v| vec![v]).collect();
-            let canonical = model.canonical(&patterns).unwrap();
+            let canonical = model.canonical(&patterns, usize::MAX).unwrap();
+            let capped = model.canonical(&patterns, 0).unwrap();
             let exact = h_star(&model);
             assert!(dominated(&model, &canonical, &exact), "seed {seed}");
 
@@ -383,10 +419,49 @@ mod tests {
                 max = max.max(b, &single).unwrap();
             }
 
+            assert!(
+                capped.buckets() == max.buckets(),
+                "the cap falls back to the maximum"
+            );
+
             gained += usize::from(!dominated(&model, &canonical, &max));
         }
 
         assert!(gained > 0, "additivity never helped");
+    }
+
+    /// Merge-and-shrink without shrinking is `h*`, in both directions'
+    /// sense (goal and initial-state distances, against exhaustive
+    /// Dijkstras); with shrinking it stays admissible and still informs.
+    #[test]
+    fn merge_and_shrink_is_exact_unshrunk_and_admissible_shrunk() {
+        let (mut informed, mut weaker) = (0, 0);
+        for seed in 0..12 {
+            let model = model(seed);
+            for direction in [Direction::Backward, Direction::Forward] {
+                let exact = model
+                    .perimeter(&model.concrete, direction, usize::MAX)
+                    .unwrap();
+                let unshrunk = model
+                    .merge_and_shrink_towards(direction, usize::MAX)
+                    .unwrap();
+                assert!(dominated(&model, &unshrunk, &exact), "seed {seed}");
+                assert!(dominated(&model, &exact, &unshrunk), "seed {seed}");
+
+                for limit in [0, 8, 32, 128] {
+                    let shrunk = model.merge_and_shrink_towards(direction, limit).unwrap();
+                    assert!(
+                        dominated(&model, &shrunk, &exact),
+                        "seed {seed}, limit {limit}"
+                    );
+                    informed += usize::from(limit > 0 && !shrunk.is_blind(model.backend()));
+                    weaker += usize::from(!dominated(&model, &exact, &shrunk));
+                }
+            }
+        }
+
+        assert!(informed > 0, "shrunk abstractions are all blind");
+        assert!(weaker > 0, "shrinking never lost information");
     }
 
     /// Hand-checked cliques: a triangle `0-1-2`, an edge `2-3`, and the
@@ -400,7 +475,9 @@ mod tests {
             adjacent[v][u] = true;
         }
 
-        let mut cliques: Vec<Vec<usize>> = maximal_cliques(&adjacent)
+        assert_eq!(maximal_cliques(&adjacent, 2), None);
+        let mut cliques: Vec<Vec<usize>> = maximal_cliques(&adjacent, 3)
+            .unwrap()
             .into_iter()
             .map(|mut c| {
                 c.sort_unstable();

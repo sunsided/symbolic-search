@@ -249,6 +249,8 @@ impl<B: Backend> Model<B> {
             AbstractionHierarchy::DropVariables => {
                 order.iter().map(|&var| (var, width(var))).collect()
             }
+            // Merge-and-shrink has no drop levels.
+            AbstractionHierarchy::MergeAndShrink { .. } => Vec::new(),
             AbstractionHierarchy::DropBits => {
                 let (goal, other): (Vec<VarId>, Vec<VarId>) = order
                     .iter()
@@ -321,6 +323,21 @@ impl<'s, B: Backend> Hierarchy<'s, B> {
         stats: &mut Stats,
     ) -> Result<(), Error> {
         if self.done {
+            return Ok(());
+        }
+
+        if let AbstractionHierarchy::MergeAndShrink { node_limit } = levels.config.hierarchy {
+            budget.charge()?;
+            self.done = true;
+            let b = levels.model.backend();
+            let heuristic = levels
+                .model
+                .merge_and_shrink_towards(self.direction, node_limit)?;
+            if !heuristic.is_blind(b) {
+                frontier.set_heuristic(heuristic)?;
+                stats.installed += 1;
+            }
+
             return Ok(());
         }
 

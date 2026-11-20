@@ -8,6 +8,9 @@ use sas_plus::{Fact, OpId, State, Task, VarId};
 
 use crate::Error;
 use crate::backend::{Backend, Oxidd};
+use recipe::Recipe;
+
+mod recipe;
 use crate::model::frontier::Strategy;
 use crate::model::heuristic::Partition;
 use crate::model::{Direction, Model};
@@ -265,10 +268,19 @@ pub enum AbstractionHierarchy {
     DropVariables,
     /// Each level drops one more bit of one variable, low bits first, which
     /// merges that variable's values pairwise (value merging within one
-    /// variable; no variables are merged and no bisimulation is used). One round drops the
-    /// lowest remaining bit of every non-goal variable, then the goal
-    /// variables follow, so all variables coarsen evenly.
+    /// variable; no variables are merged and no bisimulation is used). One
+    /// round drops the lowest remaining bit of every non-goal variable,
+    /// then the goal variables follow, so all variables coarsen evenly.
     DropBits,
+    /// One merge-and-shrink abstraction per side (see
+    /// [`SymbolicTask::merge_and_shrink`]) with this shrink limit, computed
+    /// to exhaustion the first time the side needs abstract work, and
+    /// installed as its perimeter; no further levels. Costs one budget
+    /// expansion.
+    MergeAndShrink {
+        /// The shrink limit in BDD nodes.
+        node_limit: usize,
+    },
 }
 
 impl Default for SymbaConfig {
@@ -323,6 +335,28 @@ fn compile_growing<B: Backend>(
     }
 }
 
+/// The default cap on enumerated additive subsets of
+/// [`SymbolicTask::canonical_pdbs`].
+pub const DEFAULT_MAX_SUBSETS: usize = 64;
+
+impl<B: Backend> Heuristic<B> {
+    /// The partition in `model`'s manager: the stored one when it lives
+    /// there, otherwise built again from the recipe.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Recipe::build`].
+    fn partition_in(&self, model: &Model<B>) -> Result<Partition<B>, Error> {
+        if model.id() == self.model {
+            return Ok(self.partition.clone());
+        }
+
+        // shortcut: rebuilt on every call in a grown manager; cache per model
+        // if retries become common.
+        self.recipe.build(model)
+    }
+}
+
 /// Source of [`SymbolicTask`] ids, which tie heuristics to their task.
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -370,8 +404,12 @@ struct Grown<B: Backend> {
 /// Built by [`SymbolicTask::pdb`] or [`SymbolicTask::heuristic`], and only
 /// usable with the task that built it.
 pub struct Heuristic<B: Backend = Oxidd> {
-    /// The partition, in the manager of the task with id `task`.
+    /// The partition, in the manager of the model with id `model`.
     partition: Partition<B>,
+    /// Id of the model (manager) the partition lives in.
+    model: u64,
+    /// How to build the partition again in another manager of the task.
+    recipe: Recipe,
     /// Id of the [`SymbolicTask`] that built this heuristic.
     task: u64,
 }
@@ -662,10 +700,12 @@ impl<B: Backend> SymbolicTask<B> {
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
     pub fn astar(&self, heuristic: &Heuristic<B>) -> Result<Option<Solution>, Error> {
-        let partition = self.own(heuristic)?;
+        self.check_owner(heuristic)?;
 
-        self.model
-            .best_first(Direction::Forward, partition, Strategy::Cheapest)
+        self.retrying(|model| {
+            let partition = heuristic.partition_in(model)?;
+            model.best_first(Direction::Forward, partition, Strategy::Cheapest)
+        })
     }
 
     /// Symbolic greedy best-first search forward: expands the open states
@@ -710,10 +750,12 @@ impl<B: Backend> SymbolicTask<B> {
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
     pub fn greedy(&self, heuristic: &Heuristic<B>) -> Result<Option<Solution>, Error> {
-        let partition = self.own(heuristic)?;
+        self.check_owner(heuristic)?;
 
-        self.model
-            .best_first(Direction::Forward, partition, Strategy::Greedy)
+        self.retrying(|model| {
+            let partition = heuristic.partition_in(model)?;
+            model.best_first(Direction::Forward, partition, Strategy::Greedy)
+        })
     }
 
     /// `SymBA*` with the same node limit for concrete frontiers and abstract
@@ -842,7 +884,7 @@ impl<B: Backend> SymbolicTask<B> {
             return Err(Error::UnknownVariable(var));
         }
 
-        Ok(self.wrap(self.model.pdb(pattern)?))
+        self.build(Recipe::Pdb(pattern.to_vec()))
     }
 
     /// The canonical heuristic of a PDB collection: one symbolic PDB per
@@ -889,12 +931,76 @@ impl<B: Backend> SymbolicTask<B> {
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
     pub fn canonical_pdbs(&self, patterns: &[Vec<VarId>]) -> Result<Heuristic<B>, Error> {
+        self.canonical_pdbs_with(patterns, DEFAULT_MAX_SUBSETS)
+    }
+
+    /// [`SymbolicTask::canonical_pdbs`] that enumerates at most
+    /// `max_subsets` maximal additive subsets. Their number can grow
+    /// exponentially with the number of patterns; past the cap, the
+    /// heuristic falls back to the maximum of the single PDBs (still
+    /// admissible, possibly weaker). `canonical_pdbs` uses a cap of
+    /// [`DEFAULT_MAX_SUBSETS`].
+    ///
+    /// # Errors
+    ///
+    /// As [`SymbolicTask::canonical_pdbs`].
+    pub fn canonical_pdbs_with(
+        &self,
+        patterns: &[Vec<VarId>],
+        max_subsets: usize,
+    ) -> Result<Heuristic<B>, Error> {
         let num_vars = self.model.num_vars();
         if let Some(&var) = patterns.iter().flatten().find(|&&v| v >= num_vars) {
             return Err(Error::UnknownVariable(var));
         }
 
-        Ok(self.wrap(self.model.canonical(patterns)?))
+        self.build(Recipe::Canonical {
+            patterns: patterns.to_vec(),
+            max_subsets,
+        })
+    }
+
+    /// The symbolic merge-and-shrink heuristic: variables merged linearly
+    /// (goal variables first), classes of abstract states shrunk
+    /// h-preservingly whenever they need more than `node_limit` BDD nodes,
+    /// and the exact goal distances of the final abstraction. Admissible and
+    /// consistent; `usize::MAX` never shrinks and gives `h*` (at a cost
+    /// exponential in the number of variables).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::OutOfMemory`] when the node table fills up past every
+    /// retry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+    /// use symbolic_search::{Config, SymbolicTask};
+    ///
+    /// let inc = |from, to| Operator {
+    ///     name: format!("inc{from}"),
+    ///     pre: vec![Fact::new(0, from)],
+    ///     eff: vec![Effect::new(Fact::new(0, to))],
+    ///     cost: 2,
+    /// };
+    /// let task = Task {
+    ///     variables: vec![Variable::new("counter", 3)],
+    ///     operators: vec![inc(0, 1), inc(1, 2)],
+    ///     initial: State(vec![0]),
+    ///     goal: vec![Fact::new(0, 2)],
+    ///     axioms: vec![],
+    /// };
+    /// let symbolic = SymbolicTask::new(&task, Config::for_task(&task))?;
+    ///
+    /// let exact = symbolic.merge_and_shrink(usize::MAX)?;
+    /// assert_eq!(symbolic.evaluate(&exact, &task.initial)?, Some(4));
+    /// let plan = symbolic.astar(&exact)?.expect("solvable");
+    /// assert_eq!(plan.cost, 4);
+    /// # Ok::<(), symbolic_search::Error>(())
+    /// ```
+    pub fn merge_and_shrink(&self, node_limit: usize) -> Result<Heuristic<B>, Error> {
+        self.build(Recipe::MergeAndShrink(node_limit))
     }
 
     /// A heuristic from explicit estimates: each `(facts, h)` pair says that
@@ -912,16 +1018,7 @@ impl<B: Backend> SymbolicTask<B> {
     ///   value outside its domain.
     /// - [`Error::OutOfMemory`] when the node table fills up.
     pub fn heuristic(&self, estimates: &[(Vec<Fact>, u64)]) -> Result<Heuristic<B>, Error> {
-        let pairs = estimates
-            .iter()
-            .map(|(facts, h)| Ok((*h, self.model.facts(facts)?)))
-            .collect::<Result<Vec<_>, Error>>()?;
-
-        Ok(self.wrap(Partition::from_overlapping(
-            self.model.backend(),
-            pairs,
-            Some(0),
-        )?))
+        self.build(Recipe::Estimates(estimates.to_vec()))
     }
 
     /// The value of `heuristic` in `state`, or `None` for a dead end.
@@ -934,7 +1031,7 @@ impl<B: Backend> SymbolicTask<B> {
     ///   variable, or the first missing one).
     /// - [`Error::OutOfMemory`] when the node table fills up.
     pub fn evaluate(&self, heuristic: &Heuristic<B>, state: &State) -> Result<Option<u64>, Error> {
-        let partition = self.own(heuristic)?;
+        self.check_owner(heuristic)?;
         if state.0.len() != self.model.num_vars() {
             return Err(Error::InvalidFact(Fact::new(state.0.len(), 0)));
         }
@@ -945,31 +1042,42 @@ impl<B: Backend> SymbolicTask<B> {
             .enumerate()
             .map(|(var, &value)| Fact::new(var, value))
             .collect();
-        let set = self.model.facts(&facts)?;
 
-        Ok(partition.value(self.model.backend(), &set)?)
+        self.retrying(|model| {
+            let partition = heuristic.partition_in(model)?;
+            let set = model.facts(&facts)?;
+            Ok(partition.value(model.backend(), &set)?)
+        })
     }
 
-    /// A copy of the partition of `heuristic`, checked to belong to this
-    /// task.
+    /// Checks that `heuristic` was built by this task.
     ///
     /// # Errors
     ///
     /// [`Error::ForeignHeuristic`] when it was built by another task.
-    fn own(&self, heuristic: &Heuristic<B>) -> Result<Partition<B>, Error> {
+    fn check_owner(&self, heuristic: &Heuristic<B>) -> Result<(), Error> {
         if heuristic.task != self.id {
             return Err(Error::ForeignHeuristic);
         }
 
-        Ok(heuristic.partition.clone())
+        Ok(())
     }
 
-    /// Wraps `partition` as a heuristic of this task.
-    fn wrap(&self, partition: Partition<B>) -> Heuristic<B> {
-        Heuristic {
+    /// Builds the heuristic of `recipe`, in the largest model so far and,
+    /// on running out of nodes, in grown ones.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Recipe::build`].
+    fn build(&self, recipe: Recipe) -> Result<Heuristic<B>, Error> {
+        let (model, partition) = self.retrying(|model| Ok((model.id(), recipe.build(model)?)))?;
+
+        Ok(Heuristic {
             partition,
+            model,
+            recipe,
             task: self.id,
-        }
+        })
     }
 }
 

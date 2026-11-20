@@ -96,6 +96,11 @@ impl Encoding {
         self.num_bits * 2
     }
 
+    /// Domain size of `var`, at least 1.
+    pub(crate) fn domain(&self, var: VarId) -> u32 {
+        self.vars[var].domain
+    }
+
     /// Whether `fact` names a variable of the task and a value in its domain.
     pub(crate) fn holds_value(&self, fact: Fact) -> bool {
         self.vars
