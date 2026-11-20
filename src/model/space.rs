@@ -10,7 +10,9 @@ use crate::relation::Relation;
 
 /// Relation groups sorted by cost, and the two ends of the search.
 pub(crate) struct Space<B: Backend> {
-    /// Disjunctive relation groups, each of one cost, sorted by cost.
+    /// Relation groups, each of one cost, sorted by cost: merged
+    /// disjunctive groups or conjunctively clustered operators. Projected
+    /// spaces hold monolithic groups.
     pub groups: Vec<Relation<B>>,
     /// The initial states (one state in the concrete space).
     pub initial: B::Set,

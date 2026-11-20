@@ -37,7 +37,8 @@ pub struct Config {
     pub cache_capacity: usize,
     /// Largest BDD, in nodes, that a merged transition-relation group may
     /// have. Operators of equal cost are merged into disjunctive groups up
-    /// to this size; `0` keeps one relation per operator.
+    /// to this size; `0` keeps one relation per operator. Ignored under
+    /// [`Partitioning::Conjunctive`].
     pub merge_node_limit: usize,
     /// How the SAS+ variables are ordered in the diagram.
     pub variable_order: VariableOrder,
@@ -154,9 +155,10 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A SAS+ task compiled to binary decision diagrams.
 ///
-/// Holds the encoding, the transition relations (per operator and merged
-/// per cost), and the initial and goal sets. Searches reuse them and can be
-/// run repeatedly. Plans are operator ids in execution order;
+/// Holds the encoding, the transition relations (per operator, plus merged
+/// per cost or split into conjunctive clusters, see [`Partitioning`]), and
+/// the initial and goal sets. Searches reuse them and can be run
+/// repeatedly. Plans are operator ids in execution order;
 /// [`Task::validate_plan`] gives their cost.
 ///
 /// | Search | Costs | Plan |
@@ -165,7 +167,7 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 /// | [`forward_dijkstra`](Self::forward_dijkstra), [`backward_dijkstra`](Self::backward_dijkstra), [`bidirectional_dijkstra`](Self::bidirectional_dijkstra) | used | cheapest |
 /// | [`astar`](Self::astar) (`BDDA*`) | used | cheapest for an admissible heuristic |
 /// | [`greedy`](Self::greedy) (GBFS) | used for tie breaking | any |
-/// | [`symba`](Self::symba) (`SymBA*`) | used | cheapest |
+/// | [`symba`](Self::symba), [`symba_with`](Self::symba_with) (`SymBA*`) | used | cheapest (or [`Error::BudgetExhausted`]) |
 pub struct SymbolicTask {
     /// The compiled model on the default backend.
     model: Model<Oxidd>,

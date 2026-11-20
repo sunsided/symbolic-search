@@ -17,6 +17,14 @@ const RESUMING: SymbaConfig = SymbaConfig {
     time_limit: None,
 };
 
+/// `SymBA*` parameters with slices of 2 and a small abstract limit, so
+/// paused searches sit on top of frozen levels.
+const FREEZING: SymbaConfig = SymbaConfig {
+    abstract_node_limit: 8,
+    abstract_slice: 2,
+    ..RESUMING
+};
+
 /// Checks every cost-optimal search on `task`, under every config, against
 /// the oracle and returns the optimal plan cost (`None` when unsolvable).
 pub fn check_costs(task: &Task) -> Option<u64> {
@@ -35,8 +43,8 @@ pub fn check_costs(task: &Task) -> Option<u64> {
                 symbolic.symba_with(&RESUMING),
             ),
             (
-                "symba, default parameters",
-                symbolic.symba_with(&SymbaConfig::default()),
+                "symba, resuming and freezing",
+                symbolic.symba_with(&FREEZING),
             ),
         ];
         for (what, plan) in runs {

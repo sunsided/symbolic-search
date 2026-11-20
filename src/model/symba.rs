@@ -66,6 +66,8 @@ pub(crate) struct Stats {
     pub installed: usize,
     /// Slices that resumed a paused abstract search.
     pub resumed: usize,
+    /// Abstract searches frozen for passing the abstract node limit.
+    pub frozen: usize,
 }
 
 /// The expansion and time budget of a run.
@@ -141,6 +143,8 @@ struct Levels<'s, B: Backend> {
     /// The variables in drop order; level `k` drops the first `k`.
     drop_order: &'s [VarId],
     /// Projected space per level, built on first use. Index 0 is unused.
+    // shortcut: visited levels stay alive for the whole run; drop frozen
+    // ones once memory matters.
     spaces: &'s [OnceCell<Space<B>>],
     /// The run's parameters.
     config: &'s SymbaConfig,
@@ -264,6 +268,7 @@ impl<'s, B: Backend> Hierarchy<'s, B> {
 
         let outcome = run_slice(&mut search, levels.config, budget)?;
         let b = levels.model.backend();
+        stats.frozen += usize::from(outcome == Outcome::TooHard);
         let heuristic = self.absorb(b, search, outcome)?;
         if heuristic.is_blind(b) {
             return Ok(());
@@ -435,17 +440,18 @@ mod tests {
         }
     }
 
-    /// Small slices make `SymBA*` resume abstract searches, and the plans
-    /// still cost as much as bidirectional Dijkstra's.
+    /// Small slices and a small abstract limit make `SymBA*` both resume
+    /// and freeze abstract searches, and the plans still cost as much as
+    /// bidirectional Dijkstra's.
     #[test]
     fn small_slices_resume_and_stay_optimal() {
         let config = SymbaConfig {
             frontier_node_limit: 1,
-            abstract_node_limit: 64,
-            abstract_slice: 1,
+            abstract_node_limit: 8,
+            abstract_slice: 2,
             ..SymbaConfig::default()
         };
-        let mut resumed = 0;
+        let (mut resumed, mut frozen) = (0, 0);
         for seed in 0..16 {
             let (task, model) = model(seed);
             let (plan, stats) = model.symba(&config).unwrap();
@@ -457,11 +463,15 @@ mod tests {
                 .unwrap();
 
             resumed += stats.resumed;
+            frozen += stats.frozen;
             let cost = |plan: Option<Vec<OpId>>| plan.map(|p| task.validate_plan(&p).unwrap());
             assert_eq!(cost(plan), cost(reference), "seed {seed}");
         }
 
-        assert!(resumed > 0);
+        assert!(
+            resumed > 0 && frozen > 0,
+            "resumed {resumed}, frozen {frozen}"
+        );
     }
 
     /// The budget stops a run at the deterministic extremes: no expansions,

@@ -5,7 +5,7 @@
 //!     Task --> Encoding
 //!     Task --> Operators[per-operator relations]
 //!     Encoding --> Operators
-//!     Operators --> Groups[merged groups per cost]
+//!     Operators --> Groups[merged groups per cost or conjunctive clusters]
 //!     Groups --> Space[concrete or projected space]
 //!     Space --> Frontier[open and closed per g]
 //!     Heuristic[h partition] --> Frontier
@@ -82,8 +82,9 @@ pub(crate) struct Model<B: Backend> {
     /// One relation per operator, indexed by operator id. Used for plan
     /// reconstruction.
     operators: Vec<Relation<B>>,
-    /// The concrete state space with merged relation groups, used for
-    /// search steps.
+    /// The concrete state space with the relation groups of the configured
+    /// [`Partitioning`] (merged disjunctive groups or conjunctive clusters),
+    /// used for search steps.
     concrete: Space<B>,
     /// Variables of goal facts, sorted; abstractions drop them last.
     goal_vars: Vec<sas_plus::VarId>,
@@ -582,7 +583,7 @@ mod tests {
             ],
             operators: vec![Operator {
                 name: "swap".into(),
-                pre: vec![Fact::new(2, 1)],
+                pre: vec![Fact::new(0, 0), Fact::new(2, 1)],
                 eff: vec![
                     Effect::new(Fact::new(0, 1)),
                     Effect {

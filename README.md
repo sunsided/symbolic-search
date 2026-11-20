@@ -25,7 +25,8 @@ Pre-release (0.0.0); the API will change.
 
   All searches reconstruct plans. BDDs come from
   [`oxidd`](https://crates.io/crates/oxidd) behind an internal backend trait.
-- Not done: axioms (rejected with `Error::Axioms`), mutex pruning, merge-and-shrink heuristics.
+- Not done: axioms (rejected with `Error::Axioms`), mutex pruning,
+  merge-and-shrink heuristics.
 
 See [`docs/design.md`](docs/design.md) for the design and milestones.
 

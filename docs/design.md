@@ -18,7 +18,7 @@ graph LR
     Validate --> Order[Gamer variable order]
     Order --> Encoding
     Encoding --> TR[per-operator relations]
-    TR --> Groups[merged groups per cost]
+    TR --> Groups[merged groups per cost or conjunctive clusters]
     Encoding --> Sets[initial and goal sets]
     Groups --> Search[BFS, Dijkstra, BDDA*, GBFS, bidirectional, SymBA*]
     Groups --> Abs[projected spaces: PDBs, perimeters]
@@ -37,6 +37,7 @@ Code map:
 | `order` | static variable orders (task order, Gamer) |
 | `encoding` | bit layout, fact, state, validity and frame-axiom BDDs |
 | `relation` | transition relations, image, preimage, merged groups, projection |
+| `relation::conjunctive` | per-variable conjuncts, clusters, early-quantification schedule |
 | `model` | compiled task, unit-cost BFS, cost-aware plan reconstruction |
 | `model::space` | a searchable space: groups plus initial and goal sets |
 | `model::frontier` | one search direction: open buckets by `(g, h)`, closed layers |
@@ -45,7 +46,7 @@ Code map:
 | `model::bidirectional` | bidirectional search with meeting checks |
 | `model::abstraction` | variable-dropping projections, PDBs, perimeters |
 | `model::symba` | SymBA\* driver |
-| `search` | public `SymbolicTask`, `Config`, `Heuristic` |
+| `search` | public `SymbolicTask`, `Config`, `Partitioning`, `SymbaConfig`, `Heuristic` |
 
 ## SAS+ to binary encoding
 
@@ -175,6 +176,9 @@ preimage_o(S) =  ∃ x'_eff. S[x_eff ↦ x'_eff] ∧ T_o
 ```
 
 Quantification sets and renamings are built once per operator and reused.
+Under conjunctive partitioning the single product becomes a chain of
+products over the clusters, each quantifying the bits it retires (see
+"Partitioning").
 oxidd caches substitutions by id, so reusing one renaming keeps hitting the
 apply cache.
 
@@ -380,13 +384,22 @@ crate needs one (see "Cross-crate needs").
 - **Options.** Every oracle check runs under three configs: merged groups
   with the Gamer order, one relation per operator with the task order, and
   conjunctive clusters of one conjunct each.
-- **Unit tests.** Merged groups step like the union of their operators;
+- **Unit tests.** Merged groups and conjunctive clusters step like the
+  union of their operators;
   SymBA\* with node limits 1 to 16 installs informative (not
   blind) perimeters; partition maximum and
-  overlap rules; Gamer pulls linked variables together.
+  overlap rules; Gamer pulls linked variables together; a sliced abstract
+  search ends with the perimeter of an uninterrupted one; small slices
+  both resume and freeze abstract searches and stay optimal; the SymBA\*
+  budget stops runs at zero expansions and zero time.
 - **Memory.** Tests use `node_capacity` 2¹⁵ and `cache_capacity` 2¹² (unit
   tests 2¹² and 2⁸); a test that exceeds them fails loudly.
-- **Bench.** `benches/search.rs` runs each search on `gripper-costs`.
+- **Bench.** `benches/search.rs` runs each search on `gripper-costs`, plus
+  forward and backward Dijkstra under merged disjunctive groups, one
+  disjunctive relation per operator, and conjunctive clusters (limits 0
+  and 64). Measured once (µs, forward / backward): 39 / 33, 125 / 76,
+  86 / 86, 75 / 60. Merged groups win on gripper; conjunctive clusters
+  beat per-operator disjunctive relations.
 - **Later.** Comparisons against Fast Downward's symbolic search or SymBA\*
   on translated IPC tasks, outside CI.
 
