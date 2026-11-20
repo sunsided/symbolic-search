@@ -39,7 +39,11 @@
 //!     axioms: vec![],
 //! };
 //!
-//! let symbolic = SymbolicTask::new(&task, Config::default())?;
+//! let config = Config {
+//!     node_capacity: 1 << 10,
+//!     cache_capacity: 1 << 8,
+//! };
+//! let symbolic = SymbolicTask::new(&task, config)?;
 //! let plan = symbolic.forward_bfs()?.expect("the goal is reachable");
 //! assert_eq!(plan, [0, 1]);
 //! # Ok::<(), symbolic_search::Error>(())

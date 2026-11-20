@@ -10,9 +10,9 @@ use crate::model::{Direction, Model};
 /// Resource limits of a [`SymbolicTask`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// Maximum number of live BDD nodes. The table is allocated up front, at
-    /// roughly 16 bytes per node, and never grows; searches that need more
-    /// nodes fail with [`Error::OutOfMemory`].
+    /// Maximum number of live BDD nodes. The node table is reserved at this
+    /// size when the task is compiled and never grows; searches that need
+    /// more nodes fail with [`Error::OutOfMemory`].
     pub node_capacity: usize,
     /// Number of entries of the operation cache. Larger caches avoid
     /// recomputation at the price of memory.
@@ -20,8 +20,7 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// One million nodes and a quarter million cache entries, a few tens of
-    /// megabytes in total.
+    /// 2²⁰ nodes and 2¹⁸ cache entries.
     fn default() -> Self {
         Self {
             node_capacity: 1 << 20,

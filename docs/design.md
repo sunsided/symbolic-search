@@ -71,13 +71,12 @@ bit:    v0.b0  v0.b0' v0.b1  v0.b1' v1.b0  v1.b0' ...
 Interleaving keeps relations of the form `x' = f(x)` linear in size; with
 all current bits above all next bits, a single frame axiom `x' = x` is
 already exponential. Across SAS+ variables, milestone 1 keeps the task's
-order. Planned: Gamer's causal-graph-based order. It places variables that
-interact in the causal graph close together, by local search over
-permutations that minimizes summed squared distances of connected
-variables (Kissmann and Edelkamp 2011). The order is static and set before
-any node exists. Dynamic reordering (sifting) is not needed for planning
-benchmarks in practice, and the chosen backend does not offer it (see
-below).
+order. Planned: Gamer's static order, which places dependent variables
+close together by approximating a linear arrangement problem over the
+variable dependencies (Kissmann and Edelkamp 2011). The order is set before
+any node exists. Dynamic reordering (sifting) is out of scope: the chosen
+backend does not offer it (see below), and the planners this design
+follows use a static order.
 
 ## Transition relation
 
@@ -114,7 +113,7 @@ fires. Unconditional effects collapse to `v' = a`. A test pins the
   one part per operator): `image(S) = ⋁_o image_o(S)`. Plan reconstruction
   needs per-operator parts anyway.
 - *Merged disjunctive groups*: merge operator relations, in a balanced tree,
-  up to a node threshold (SymBA\* uses about 100 000 nodes), so one step
+  up to a node threshold, as SymBA\* does, so one step
   does fewer relational products. The merged parts need a shared
   quantification set (the union of affected variables) and explicit frame
   axioms for the variables only some members touch. Planned for milestone 3,
@@ -178,7 +177,7 @@ already satisfies the goal, the plan is empty.
 
 ## Cost handling (Dijkstra, BDDA\*, SymBA\*)
 
-Planned for milestones 2 and 3. The design follows Torralba et al. (2017):
+Planned for milestones 3 and 5. The design follows Torralba et al. (2017):
 
 - **Dijkstra.** Open is a map `g → BDD`, a bucket per distinct cost. Expand
   the cheapest bucket. Zero-cost operators get a BFS closure within the
@@ -210,9 +209,9 @@ the crates.io metadata; nothing was benchmarked here.
 | Crate | Version, updated | License | Reordering | Relational product, renaming | Notes |
 |---|---|---|---|---|---|
 | `oxidd` | 0.13.0, 2026-09 | MIT OR Apache-2.0 | static reorder to a given order, plus an `unsafe` adjacent-level swap primitive (`oxidd-reorder` 0.8.0). No sifting | `apply_exists` (fused and-exists), parallel `substitute` with cached substitution ids | shared manager with unique table and apply cache; BDD, BCDD, ZBDD, MTBDD, TDD; fixed node capacity with GC; fallible allocation; MSRV 1.91; TACAS 2024 paper; multi-threading optional |
-| `biodivine-lib-bdd` | 0.6.3, 2026-02 | MIT | none, static order | `binary_op_with_exists`; `substitute` one variable at a time, no bulk rename | each `Bdd` is a standalone node vector, so there is no node sharing across sets or global cache; simple, safe API; MSRV 1.88; heavily used in systems biology |
-| `cudd-sys` / `cudd` | 1.1.1, 2025-12 / 0.1.4, 2023-04 | CC0 bindings, CUDD BSD-3 | full CUDD (sifting and more) | full CUDD | FFI: needs a C build and `unsafe`, which conflicts with `unsafe_code = "forbid"`; the safe `cudd` wrapper is stale |
-| `sylvan-sys` | 1.1.0, 2023-01 | Apache-2.0 | Sylvan (limited) | yes | FFI, stale |
+| `biodivine-lib-bdd` | 0.6.3, 2026-02 | MIT | none, static order | `binary_op_with_exists`; `substitute` one variable at a time; bulk `rename_variables` is an `unsafe fn` (renames nodes in place, "non-semantic" per its docs) | `pub struct Bdd(Vec<BddNode>)`: each diagram is its own node vector, with no node sharing across sets and no shared cache; simple API; MSRV 1.88 |
+| `cudd-sys` / `cudd` | 1.1.1, 2025-12 / 0.1.4, 2023-04 | bindings CC0 / MIT | upstream CUDD has sifting (not checked here) | upstream CUDD has and-abstract (not checked here) | FFI: needs a C build and calls into `unsafe`, which the crate's `unsafe_code = "forbid"` rules out without a wrapper; the safe `cudd` wrapper was last updated in 2023 |
+| `sylvan-sys` | 1.1.0, 2023-01 | Apache-2.0 | not checked | upstream Sylvan has relational products (not checked here) | FFI, last updated 2023 |
 | `ruddy` | 0.0.2, 2025-11 | MIT | not checked | not checked | early, about 100 downloads |
 
 Not evaluated: crates whose crates.io lookup failed (`lumindd`, `rsdd` under
@@ -232,8 +231,8 @@ single thread.** Reasons:
    `Error::OutOfMemory` instead of aborting, and tests can cap memory.
 4. Dual MIT OR Apache-2.0 license, actively maintained, and a peer-reviewed
    design. MTBDDs are there if an ADD heuristic is wanted later.
-5. Static reordering covers what planners do (a static order chosen up
-   front). Sifting is missing in every pure-Rust option.
+5. Static reordering covers the planned static variable order. Sifting is
+   missing in both pure-Rust crates inspected (oxidd and biodivine).
 
 Costs of the choice:
 
@@ -296,11 +295,13 @@ crate needs one (see "Cross-crate needs").
 1. **Done.** Encoding, per-operator relations with conditional effects,
    forward and backward symbolic BFS, layered plan reconstruction, oxidd
    backend behind `Backend`.
-2. **Symbolic Dijkstra** (forward and backward), cost-grouped relations,
-   zero-cost closure, cost-aware reconstruction. Oracle: `perfect_heuristic`.
-3. **Bidirectional BFS and Dijkstra**, merged disjunctive relation groups,
-   time and node-based direction choice, search statistics (layers, nodes,
+2. **Bidirectional BFS** (the roadmap's "BFS and bidirectional first"):
+   time- and node-based direction choice, meeting-layer reconstruction,
+   merged disjunctive relation groups, search statistics (layers, nodes,
    peak), Gamer's static variable order.
+3. **Symbolic Dijkstra**, forward, backward and bidirectional:
+   cost-grouped relations, zero-cost closure, cost-aware reconstruction.
+   Oracle: `perfect_heuristic`.
 4. **Axioms**, following Speck et al. (2019). State-invariant (mutex)
    pruning when `sas-plus` provides mutex groups.
 5. **BDDA\*** with symbolic PDBs; then **SymBA\*** with perimeter
@@ -343,19 +344,27 @@ crate needs one (see "Cross-crate needs").
 
 ## References
 
+Venues and DOIs were checked online, except for the first three entries
+(authors, title and year only).
+
 - R. E. Bryant. Graph-based algorithms for Boolean function manipulation.
-  IEEE Transactions on Computers 35(8), 1986.
+  1986.
 - J. R. Burch, E. M. Clarke, D. E. Long. Symbolic model checking with
-  partitioned transition relations. VLSI 1991.
+  partitioned transition relations. 1991.
 - R. Rudell. Dynamic variable ordering for ordered binary decision
-  diagrams. ICCAD 1993.
-- S. Edelkamp, F. Reffel. OBDDs in heuristic search. KI 1998.
+  diagrams. 1993.
+- S. Edelkamp, F. Reffel. OBDDs in heuristic search. KI 1998, LNCS 1504.
+  BDDA\*.
 - R. M. Jensen, R. E. Bryant, M. M. Veloso. SetA\*: An efficient BDD-based
-  heuristic search algorithm. AAAI 2002.
+  heuristic search algorithm. AAAI 2002, 668–673.
 - P. Kissmann, S. Edelkamp. Improving cost-optimal domain-independent
-  symbolic planning. AAAI 2011.
+  symbolic planning. AAAI 2011, 992–997. doi:10.1609/aaai.v25i1.8009.
+  Gamer.
+- Á. Torralba, V. Alcázar, D. Borrajo, P. Kissmann, S. Edelkamp. SymBA\*: A
+  symbolic bidirectional A\* planner. International Planning Competition
+  2014, 105–108. Winner of the optimal track.
 - Á. Torralba, C. Linares López, D. Borrajo. Abstraction heuristics for
-  symbolic bidirectional search. IJCAI 2016.
+  symbolic bidirectional search. IJCAI 2016, 3272–3278. SymBA\* in depth.
 - Á. Torralba, V. Alcázar, P. Kissmann, S. Edelkamp. Efficient symbolic
   search for cost-optimal planning. Artificial Intelligence 242:52–79, 2017.
   doi:10.1016/j.artint.2016.10.001.
