@@ -24,8 +24,11 @@
 //! initial state for the backward frontier). Each side keeps its abstract
 //! search between slices and resumes it instead of starting over.
 //!
-//! Level `k` of a side's hierarchy drops `k` variables, non-goal variables
-//! first, so each level is coarser and cheaper than the last. An abstract
+//! Level `k` of a side's hierarchy applies `k` drop steps (whole variables,
+//! or single low bits for [`AbstractionHierarchy::DropBits`]), non-goal
+//! variables first, so each level is coarser and cheaper than the last.
+//! Each abstract search owns its projected space, so a frozen level's
+//! relations are freed with it. An abstract
 //! search whose next bucket passes the abstract node limit is frozen and the
 //! next level starts. An exhausted search is exact for its abstraction, and
 //! coarser levels can only give smaller values, so the side stops abstract
@@ -41,22 +44,22 @@
 //! is checked before each of them.
 //!
 //! Simplifications against the full planner: abstractions are fixed variable
-//! drops instead of merge-and-shrink or chosen patterns, and the step choice
+//! or bit drops instead of full merge-and-shrink or chosen patterns, and the step choice
 //! and slices use node counts and expansion counts instead of time
 //! estimates.
 
-use std::cell::OnceCell;
 use std::time::Instant;
 
 use sas_plus::VarId;
 
 use crate::backend::Backend;
+use crate::encoding::Frame;
 use crate::model::abstraction::perimeter_of;
 use crate::model::frontier::{Frontier, Strategy};
 use crate::model::heuristic::Partition;
 use crate::model::space::Space;
 use crate::model::{Direction, Model};
-use crate::{Error, Solution, SymbaConfig};
+use crate::{AbstractionHierarchy, Error, Solution, SymbaConfig};
 
 /// Counters of one `SymBA*` run, for tests and tuning.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -139,17 +142,15 @@ struct Hierarchy<'s, B: Backend> {
     done: bool,
 }
 
-/// What a [`Hierarchy`] needs from the run: the model, the lazily built
-/// projected spaces, the drop order and the parameters.
+/// What a [`Hierarchy`] needs from the run: the model, the drop steps and
+/// the parameters.
 struct Levels<'s, B: Backend> {
     /// The model whose concrete space is abstracted.
     model: &'s Model<B>,
-    /// The variables in drop order; level `k` drops the first `k`.
-    drop_order: &'s [VarId],
-    /// Projected space per level, built on first use. Index 0 is unused.
-    // shortcut: visited levels stay alive for the whole run; drop frozen
-    // ones once memory matters.
-    spaces: &'s [OnceCell<Space<B>>],
+    /// Drop steps `(var, n)`: after the step, the `n` low bits of `var` are
+    /// dropped. Level `k` applies the first `k` steps; the level that applies
+    /// all of them (the trivial abstraction) is never built.
+    steps: &'s [(VarId, usize)],
     /// The run's parameters.
     config: &'s SymbaConfig,
 }
@@ -166,12 +167,10 @@ impl<B: Backend> Model<B> {
     /// - [`Error::OutOfMemory`] when the node table fills up.
     pub(crate) fn symba(&self, config: &SymbaConfig) -> Result<(Option<Solution>, Stats), Error> {
         let b = &self.backend;
-        let drop_order = self.drop_order();
-        let spaces: Vec<OnceCell<Space<B>>> = drop_order.iter().map(|_| OnceCell::new()).collect();
+        let steps = self.drop_steps(config.hierarchy);
         let levels = Levels {
             model: self,
-            drop_order: &drop_order,
-            spaces: &spaces,
+            steps: &steps,
             config,
         };
         let mut sides = [Direction::Backward, Direction::Forward].map(Hierarchy::new);
@@ -217,23 +216,69 @@ impl<B: Backend> Model<B> {
             .chain(all.filter(is_goal))
             .collect()
     }
+
+    /// The drop steps of `hierarchy` (see [`Levels::steps`]), in
+    /// [`Model::drop_order`] and without variables of zero bits.
+    ///
+    /// Dropping variables takes one variable per step. Dropping bits
+    /// merges values pairwise: round `r` drops the `r`-th lowest bit of every
+    /// non-goal variable wide enough, then the same for the goal variables,
+    /// so the hierarchy coarsens all variables evenly before any vanishes.
+    pub(crate) fn drop_steps(&self, hierarchy: AbstractionHierarchy) -> Vec<(VarId, usize)> {
+        let width = |var: VarId| self.encoding.diagram_vars(var, Frame::Current).count();
+        let order: Vec<VarId> = self
+            .drop_order()
+            .into_iter()
+            .filter(|&var| width(var) > 0)
+            .collect();
+        match hierarchy {
+            AbstractionHierarchy::DropVariables => {
+                order.iter().map(|&var| (var, width(var))).collect()
+            }
+            AbstractionHierarchy::DropBits => {
+                let (goal, other): (Vec<VarId>, Vec<VarId>) = order
+                    .iter()
+                    .partition(|var| self.goal_vars.binary_search(var).is_ok());
+                [other, goal]
+                    .iter()
+                    .flat_map(|vars| {
+                        let rounds = vars.iter().map(|&v| width(v)).max().unwrap_or(0);
+                        (1..=rounds).flat_map(move |round| {
+                            vars.iter()
+                                .filter(move |&&v| width(v) >= round)
+                                .map(move |&v| (v, round))
+                        })
+                    })
+                    .collect()
+            }
+        }
+    }
 }
 
-impl<'s, B: Backend> Levels<'s, B> {
-    /// The projected space of `level`, built on first use.
+impl<B: Backend> Levels<'_, B> {
+    /// The projected space of `level`. The abstract search that runs on it
+    /// owns it, so a frozen level's relations are freed with its search.
     ///
     /// # Errors
     ///
     /// Out of memory in the backend.
-    fn space(&self, level: usize) -> Result<&'s Space<B>, Error> {
-        let cell: &'s OnceCell<Space<B>> = &self.spaces[level];
-        if cell.get().is_none() {
-            let space = self.model.project(&self.drop_order[..level])?;
-            let _ = cell.set(space);
-        }
-
-        Ok(cell.get().expect("the space was just built"))
+    fn space(&self, level: usize) -> Result<Space<B>, Error> {
+        Ok(self
+            .model
+            .project_bits(&dropped_bits(&self.steps[..level]))?)
     }
+}
+
+/// The low bits dropped per variable after `steps`: each variable with its
+/// largest step.
+pub(crate) fn dropped_bits(steps: &[(VarId, usize)]) -> Vec<(VarId, usize)> {
+    let mut dropped = std::collections::BTreeMap::new();
+    for &(var, n) in steps {
+        let entry = dropped.entry(var).or_insert(0);
+        *entry = n.max(*entry);
+    }
+
+    dropped.into_iter().collect()
 }
 
 impl<'s, B: Backend> Hierarchy<'s, B> {
@@ -300,7 +345,7 @@ impl<'s, B: Backend> Hierarchy<'s, B> {
             return Ok(Some(search));
         }
 
-        if self.next_level >= levels.drop_order.len() {
+        if self.next_level >= levels.steps.len() {
             return Ok(None);
         }
 

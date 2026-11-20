@@ -69,10 +69,31 @@ impl<B: Backend> Partition<B> {
     ///
     /// Out of memory in the backend.
     pub(crate) fn max(&self, b: &B, other: &Self) -> BackendResult<Self> {
+        self.combine(b, other, u64::max)
+    }
+
+    /// The pointwise sum of `self` and `other` (saturating). A state is dead
+    /// when either side says so. Admissible when the two heuristics are
+    /// additive, for example PDBs of patterns no operator affects both of.
+    ///
+    /// # Errors
+    ///
+    /// Out of memory in the backend.
+    pub(crate) fn sum(&self, b: &B, other: &Self) -> BackendResult<Self> {
+        self.combine(b, other, u64::saturating_add)
+    }
+
+    /// The pointwise combination of `self` and `other` by `op`, dead where
+    /// either is dead.
+    ///
+    /// # Errors
+    ///
+    /// Out of memory in the backend.
+    fn combine(&self, b: &B, other: &Self, op: fn(u64, u64) -> u64) -> BackendResult<Self> {
         let mut by_h: BTreeMap<u64, B::Set> = BTreeMap::new();
         for (h1, s1) in &self.buckets {
             for (h2, s2) in &other.buckets {
-                add(b, &mut by_h, *h1.max(h2), &b.and(s1, s2)?)?;
+                add(b, &mut by_h, op(*h1, *h2), &b.and(s1, s2)?)?;
             }
         }
 
@@ -189,5 +210,21 @@ mod tests {
 
         assert_eq!(max.value(&b, &x).unwrap(), Some(4));
         assert_eq!(max.value(&b, &not_x).unwrap(), None);
+    }
+
+    /// The sum adds values and keeps dead ends of either side.
+    #[test]
+    fn sum_adds_values_and_keeps_dead_ends() {
+        let b = manager();
+        let x = b.var(0);
+        let not_x = b.not(&x).unwrap();
+        let left = Partition::from_overlapping(&b, vec![(2, x.clone()), (5, not_x.clone())], None)
+            .unwrap();
+        let right = Partition::from_overlapping(&b, vec![(4, x.clone())], None).unwrap();
+
+        let sum = left.sum(&b, &right).unwrap();
+
+        assert_eq!(sum.value(&b, &x).unwrap(), Some(6));
+        assert_eq!(sum.value(&b, &not_x).unwrap(), None);
     }
 }

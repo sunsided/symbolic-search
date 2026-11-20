@@ -50,6 +50,39 @@ fn pattern(task: &Task) -> Vec<VarId> {
     vars
 }
 
+/// One singleton pattern per variable of `task`.
+fn singletons(task: &Task) -> Vec<Vec<VarId>> {
+    (0..task.variables.len()).map(|var| vec![var]).collect()
+}
+
+/// Checks the canonical heuristic of the singleton patterns on every
+/// reachable state: at most `h*`, dead only on real dead ends, at least
+/// every single PDB.
+fn check_canonical_values(task: &Task) {
+    let symbolic = SymbolicTask::new(task, SMALL).expect("task compiles");
+    let patterns = singletons(task);
+    let canonical = symbolic.canonical_pdbs(&patterns).expect("pdbs fit");
+    let singles: Vec<Heuristic> = patterns
+        .iter()
+        .map(|p| symbolic.pdb(p).expect("pdb fits"))
+        .collect();
+    let h_star = task.perfect_heuristic();
+
+    for state in oracle::reachable_states(task) {
+        let h = symbolic.evaluate(&canonical, &state).expect("fits");
+        match h {
+            Some(h) => assert!(h_star(&state).is_none_or(|star| h <= star), "admissible"),
+            None => assert!(h_star(&state).is_none(), "only real dead ends"),
+        }
+
+        for single in &singles {
+            let s = symbolic.evaluate(single, &state).expect("fits");
+            // `None` (dead) counts as infinity.
+            assert!(h.is_none() || s.is_some_and(|s| s <= h.unwrap()));
+        }
+    }
+}
+
 /// Checks `BDDA*` with several heuristics and GBFS on `task`; returns the
 /// optimal cost.
 fn check_heuristic_search(task: &Task) -> Option<u64> {
@@ -57,8 +90,12 @@ fn check_heuristic_search(task: &Task) -> Option<u64> {
     for config in CONFIGS {
         let symbolic = SymbolicTask::new(task, config).expect("task compiles");
         let pdb = symbolic.pdb(&pattern(task)).expect("pdb fits");
+        let canonical = symbolic
+            .canonical_pdbs(&singletons(task))
+            .expect("pdbs fit");
         let runs = [
             ("astar with pdb", symbolic.astar(&pdb)),
+            ("astar with canonical pdbs", symbolic.astar(&canonical)),
             (
                 "astar with h*",
                 symbolic.astar(&perfect(&symbolic, task, false)),
@@ -122,6 +159,7 @@ fn heuristic_search_on_random_tasks() {
     for seed in 0..48 {
         let task = random_task(seed, RandomTaskParams::default());
         check_pdb_values(&task);
+        check_canonical_values(&task);
         solved += usize::from(check_heuristic_search(&task).is_some_and(|c| c > 0));
     }
 
@@ -139,6 +177,7 @@ fn heuristic_search_with_conditional_effects() {
     for seed in 0..48 {
         let task = random_task(seed, params);
         check_pdb_values(&task);
+        check_canonical_values(&task);
         check_heuristic_search(&task);
     }
 }

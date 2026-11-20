@@ -3,7 +3,7 @@
 
 use sas_plus::random::{RandomTaskParams, random_task};
 use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
-use symbolic_search::{SymbaConfig, SymbolicTask};
+use symbolic_search::{AbstractionHierarchy, SymbaConfig, SymbolicTask};
 
 use crate::{CONFIGS, SMALL, oracle, validated_cost};
 
@@ -15,6 +15,7 @@ const RESUMING: SymbaConfig = SymbaConfig {
     abstract_slice: 1,
     max_expansions: None,
     time_limit: None,
+    hierarchy: AbstractionHierarchy::DropVariables,
 };
 
 /// `SymBA*` parameters with slices of 2 and a small abstract limit, so
@@ -23,6 +24,12 @@ const FREEZING: SymbaConfig = SymbaConfig {
     abstract_node_limit: 8,
     abstract_slice: 2,
     ..RESUMING
+};
+
+/// [`FREEZING`] on the bit-dropping hierarchy.
+const SHRINKING: SymbaConfig = SymbaConfig {
+    hierarchy: AbstractionHierarchy::DropBits,
+    ..FREEZING
 };
 
 /// Checks every cost-optimal search on `task`, under every config, against
@@ -46,6 +53,7 @@ pub fn check_costs(task: &Task) -> Option<u64> {
                 "symba, resuming and freezing",
                 symbolic.symba_with(&FREEZING),
             ),
+            ("symba, dropping bits", symbolic.symba_with(&SHRINKING)),
         ];
         for (what, plan) in runs {
             let plan = plan.unwrap_or_else(|e| panic!("{what}: {e}"));

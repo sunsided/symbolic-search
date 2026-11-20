@@ -45,7 +45,7 @@ Code map:
 | `model::heuristic` | heuristics as a partition of BDDs by `h` value |
 | `model::best_first` | unidirectional Dijkstra, BDDA\*, GBFS |
 | `model::bidirectional` | bidirectional search with meeting checks |
-| `model::abstraction` | variable-dropping projections, PDBs, perimeters |
+| `model::abstraction` | variable- and bit-dropping projections, PDBs, canonical PDB collections, perimeters |
 | `model::symba` | SymBA\* driver |
 | `search` | public `SymbolicTask`, `Config`, `Partitioning`, `SymbaConfig`, `Heuristic` |
 
@@ -145,9 +145,18 @@ fires. Unconditional effects collapse to `v' = a`. A test pins the
   single operators are split: `T_o = pre_rest ∧ ⋀_{v ∈ eff(o)} C_v` with
   `C_v = pre_v ∧ valid_v ∧ E_v`, one relation per operator and no merging.
   Untouched variables keep their frame because they are never quantified.
-  The schedule is greedy in the IWLS95 spirit: the precondition conjunct
-  first, then the conjunct that retires the most affected variables, ties
-  to the smaller support. Consecutive conjuncts are clustered while a
+  The precondition conjunct goes first. `Schedule::Greedy` (default) then
+  takes the conjunct that retires the most affected variables, ties to the
+  smaller support; `Schedule::Iwls95` takes the largest benefit
+  `2·v/w + w/x + y/z + m/M` of Ranjan et al. (1995): retired over
+  support smoothing variables, support over still-open smoothing
+  variables, introduced over not-yet-introduced next-state variables
+  (constant here, one per conjunct), and the deepest smoothing level over
+  the deepest open one, with the paper's weights. On the gripper fixtures,
+  with one cluster per conjunct, the summed peak intermediate product over
+  all operators and BFS layers is 4390 nodes greedy and 4404 IWLS95, so
+  greedy stays the default; wall-clock benches were too noisy on a loaded
+  machine to separate them. Consecutive conjuncts are clustered while a
   cluster has at most `cluster_node_limit` nodes. The image quantifies the
   current bits of `v` after the last cluster that mentions `v`; the
   preimage quantifies the next bits of `v` after `C_v`'s cluster. Projected
@@ -261,10 +270,31 @@ either direction and in the concrete or a projected space.
   and the rest is dead. The projection is the exact induced abstraction, so
   with conditional effects it can be more informed than
   `sas_plus::Projection`, which lets an uncertain effect fire or not.
+- **Bit abstractions.** `Model::project_bits` drops only the `n` lowest
+  bits of a variable, which merges its values in blocks of `2ⁿ`. It is the
+  same exact induced abstraction (quantify the bits after restricting the
+  variable to valid codes), so distances stay admissible and consistent.
+  Unit tests check every level of the bit hierarchy against `h*` and
+  against the level before, on random tasks with domains up to 7.
+- **PDB collections.** `SymbolicTask::canonical_pdbs` builds one PDB per
+  pattern and combines them canonically: the maximum, over all maximal
+  cliques of the additivity graph (two patterns are additive when no
+  operator affects a variable of both), of the sum of the clique's PDBs.
+  Sums and maxima are pairwise products of the partitions; dead in either
+  operand is dead. Cliques come from Bron–Kerbosch with pivoting. Tests
+  check, on every reachable state of random tasks, `h ≤ h*`, dead only on
+  real dead ends, at least every single PDB, and strictly more than their
+  maximum on some task; `BDDA*` with the singleton-pattern collection is
+  optimal in the integration sweeps.
 - **SymBA\*.** Both sides start blind (bidirectional Dijkstra). Each side
-  owns an abstraction hierarchy: level `k` drops `k` variables (non-goal
-  variables first, from the last id down), and projected spaces are built
-  on first use. When the side about to expand has a next bucket over
+  owns an abstraction hierarchy (`SymbaConfig::hierarchy`): level `k`
+  applies `k` drop steps. `DropVariables` drops one variable per step
+  (non-goal variables first, from the last id down); `DropBits` drops one
+  low bit per step, round-robin over the non-goal variables and then the
+  goal variables, so all variables coarsen evenly (a shrink-only,
+  merge-and-shrink-like hierarchy without bisimulation). Each abstract
+  search owns its projected space, so freezing a level frees its
+  relations. When the side about to expand has a next bucket over
   `SymbaConfig::frontier_node_limit`, it first gets one slice of abstract
   work: its abstract search (blind, in the opposite direction) runs for
   `abstract_slice` expansions and pauses. The search is kept and resumed on
@@ -286,7 +316,8 @@ either direction and in the concrete or a projected space.
   the cut-off, which no unmet plan undercuts. `symba(limit)` sets
   both node limits to `limit` with unbounded slices and no budget. Not done
   compared to Torralba et al.: time-based step estimates, a hierarchy
-  chosen by abstract search cost, merge-and-shrink abstractions.
+  chosen by abstract search cost, merge-and-shrink with real merge
+  strategies and bisimulation shrinking.
 
 ## Backend comparison and choice
 
@@ -477,6 +508,9 @@ Venues and DOIs were checked online, except for the first three entries
   1986.
 - J. R. Burch, E. M. Clarke, D. E. Long. Symbolic model checking with
   partitioned transition relations. 1991.
+- R. K. Ranjan, A. Aziz, R. K. Brayton, B. Plessier, C. Pixley. Efficient
+  BDD algorithms for FSM synthesis and verification. IWLS 1995 (the
+  IWLS95 schedule; definitions and weights taken from the paper).
 - R. Rudell. Dynamic variable ordering for ordered binary decision
   diagrams. 1993.
 - S. Edelkamp, F. Reffel. OBDDs in heuristic search. KI 1998, LNCS 1504.

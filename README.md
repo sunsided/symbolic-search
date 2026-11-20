@@ -16,17 +16,17 @@ Pre-release (0.0.0); the API will change.
   - symbolic Dijkstra forward, backward and bidirectional (action costs,
     zero costs included);
   - BDDA\* and symbolic greedy best-first search with heuristics stored as
-    one BDD per `h` value, from symbolic pattern databases or explicit
-    estimates;
+    one BDD per `h` value, from symbolic pattern databases, canonical PDB
+    collections (maximum over additive subsets) or explicit estimates;
   - SymBA\*: bidirectional A\* with perimeter abstractions that drop
-    variables, resumable abstract searches per direction, separate concrete
+    variables or single bits (value merging), resumable abstract searches per direction, separate concrete
     and abstract node limits, and an expansion and time budget
     (`SymbaConfig`).
 
   All searches reconstruct plans. BDDs come from
   [`oxidd`](https://crates.io/crates/oxidd) behind an internal backend trait.
 - Not done: axioms (rejected with `Error::Axioms`), mutex pruning,
-  merge-and-shrink heuristics.
+  full merge-and-shrink (merge strategies, bisimulation shrinking).
 
 See [`docs/design.md`](docs/design.md) for the design and milestones.
 

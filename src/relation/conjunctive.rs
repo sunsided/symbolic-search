@@ -12,12 +12,11 @@
 //! untouched variables. Untouched variables keep their frame for free: they
 //! are never quantified or renamed, exactly as in the monolithic relation.
 //!
-//! **Schedule.** The conjuncts are ordered greedily, IWLS95-style: `pre_rest`
-//! first (it only filters), then repeatedly the conjunct that retires the most
-//! affected variables (variables no remaining conjunct mentions), ties to the
-//! smaller support, then to the lower variable. Consecutive conjuncts are then
-//! merged into clusters while a cluster's BDD has at most the cluster node
-//! limit.
+//! **Schedule.** `pre_rest` goes first (it only filters). The other
+//! conjuncts are ordered by [`Schedule::Greedy`] (most retired variables) or
+//! by the [`Schedule::Iwls95`] benefit function; see the `schedule`
+//! submodule. Consecutive conjuncts are then merged into clusters while a
+//! cluster's BDD has at most the cluster node limit.
 //!
 //! **Image.** The current bits of `v` appear in `C_v` and in every conjunct
 //! whose effect conditions or preconditions name `v`. They are quantified in
@@ -35,10 +34,13 @@
 //! distribute over the conjuncts, so the conjunctive mode keeps one relation
 //! per operator instead of merged groups.
 
+mod schedule;
+
 use std::collections::BTreeSet;
 
 use sas_plus::{Operator, VarId};
 
+use crate::Schedule;
 use crate::backend::{Backend, BackendResult};
 use crate::encoding::{Encoding, Frame};
 use crate::relation::{Relation, affected_vars, next_value};
@@ -80,7 +82,8 @@ struct Merged<S> {
 impl<B: Backend> Relation<B> {
     /// Builds the relation of `operator`, split into scheduled clusters of
     /// at most `cluster_node_limit` nodes each (a single conjunct may be
-    /// larger). `0` keeps one cluster per conjunct.
+    /// larger), in the order `schedule` picks. `0` keeps one cluster per
+    /// conjunct.
     ///
     /// The monolithic diagram is kept for projection, merging and plan
     /// reconstruction; image and preimage use the clusters.
@@ -93,8 +96,9 @@ impl<B: Backend> Relation<B> {
         encoding: &Encoding,
         operator: &Operator,
         cluster_node_limit: usize,
+        schedule: Schedule,
     ) -> BackendResult<Self> {
-        let conjuncts = schedule(split(b, encoding, operator)?);
+        let conjuncts = schedule::order(encoding, split(b, encoding, operator)?, schedule);
         let merged = cluster(b, conjuncts, cluster_node_limit)?;
         let clusters = quantification(b, encoding, &merged)?;
 
@@ -108,6 +112,24 @@ impl<B: Backend> Relation<B> {
     #[cfg(test)]
     pub(crate) fn cluster_count(&self) -> usize {
         self.clusters.len()
+    }
+
+    /// The image of `states` with the largest intermediate product, in
+    /// nodes, along the cluster chain: the measure a schedule minimises.
+    ///
+    /// # Errors
+    ///
+    /// Out of memory in the backend.
+    #[cfg(test)]
+    pub(crate) fn image_with_peak(&self, b: &B, states: &B::Set) -> BackendResult<(B::Set, usize)> {
+        let mut peak = b.node_count(states);
+        let mut product = states.clone();
+        for c in &self.clusters {
+            product = b.and_exists(&product, &c.diagram, &c.retire_current)?;
+            peak = peak.max(b.node_count(&product));
+        }
+
+        Ok((b.rename(&product, &self.to_current)?, peak))
     }
 
     /// [`Relation::image`] by early quantification over the clusters.
@@ -208,49 +230,6 @@ fn variable_conjunct<B: Backend>(
         support,
         owner: Some(var),
     })
-}
-
-/// Orders `conjuncts` greedily for early quantification (see the module
-/// docs). The precondition conjunct on untouched variables stays first.
-fn schedule<S>(mut conjuncts: Vec<Conjunct<S>>) -> Vec<Conjunct<S>> {
-    let mut ordered = Vec::with_capacity(conjuncts.len());
-    if conjuncts.first().is_some_and(|c| c.owner.is_none()) {
-        ordered.push(conjuncts.remove(0));
-    }
-
-    while !conjuncts.is_empty() {
-        let best = (0..conjuncts.len())
-            .min_by_key(|&i| {
-                let retired = retired_by(&conjuncts, i);
-                (
-                    core::cmp::Reverse(retired),
-                    conjuncts[i].support.len(),
-                    conjuncts[i].owner,
-                )
-            })
-            .expect("conjuncts is not empty");
-        ordered.push(conjuncts.remove(best));
-    }
-
-    ordered
-}
-
-/// How many affected variables would no longer be mentioned by any
-/// remaining conjunct after taking `conjuncts[index]`.
-fn retired_by<S>(conjuncts: &[Conjunct<S>], index: usize) -> usize {
-    let affected: BTreeSet<VarId> = conjuncts.iter().filter_map(|c| c.owner).collect();
-    let mentioned_elsewhere = |var: &VarId| {
-        conjuncts
-            .iter()
-            .enumerate()
-            .any(|(j, c)| j != index && (c.support.contains(var) || c.owner == Some(*var)))
-    };
-
-    conjuncts[index]
-        .support
-        .iter()
-        .filter(|var| affected.contains(var) && !mentioned_elsewhere(var))
-        .count()
 }
 
 /// Merges consecutive scheduled conjuncts while the merged BDD has at most

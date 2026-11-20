@@ -122,11 +122,15 @@ impl<B: Backend> Model<B> {
             Partitioning::Disjunctive => {
                 relation::partition(&backend, &encoding, &operators, config.merge_node_limit)?
             }
-            Partitioning::Conjunctive { cluster_node_limit } => relation::conjunctive_groups(
+            Partitioning::Conjunctive {
+                cluster_node_limit,
+                schedule,
+            } => relation::conjunctive_groups(
                 &backend,
                 &encoding,
                 &task.operators,
                 cluster_node_limit,
+                schedule,
             )?,
         };
         let initial = encoding.state(&backend, &task.initial)?;
@@ -527,16 +531,22 @@ mod tests {
 
     /// Conjunctive clusters step exactly like the union of the monolithic
     /// operator relations, image and preimage, at cluster limits from one
-    /// conjunct per cluster to one cluster per operator.
+    /// conjunct per cluster to one cluster per operator, under both
+    /// schedules.
     #[test]
     fn conjunctive_clusters_equal_operator_union() {
         let mut split_with_conditions = 0;
-        for limit in [0, 8, 64, usize::MAX] {
+        let schedules = [crate::Schedule::Greedy, crate::Schedule::Iwls95];
+        for (limit, schedule) in [0, 8, 64, usize::MAX]
+            .into_iter()
+            .flat_map(|limit| schedules.map(|schedule| (limit, schedule)))
+        {
             for seed in 0..16 {
                 let task = random(seed);
                 let config = Config {
                     partitioning: Partitioning::Conjunctive {
                         cluster_node_limit: limit,
+                        schedule,
                     },
                     ..tiny_config()
                 };
@@ -558,6 +568,52 @@ mod tests {
             split_with_conditions > 0,
             "no conditional cross-variable effect"
         );
+    }
+
+    /// On the gripper fixtures, both schedules give the same images from
+    /// every forward BFS layer; prints the summed peak intermediate product
+    /// sizes per schedule (run with `--nocapture`) for `docs/design.md`.
+    #[test]
+    fn schedules_agree_on_gripper_and_report_peaks() {
+        for name in ["gripper-unit", "gripper-costs"] {
+            let path = format!(
+                "{}/tests/fixtures/{name}/output.sas",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let text = std::fs::read_to_string(path).unwrap();
+            let task = sas_plus::fdr::SasFile::parse(&text).unwrap().to_task();
+            let mut peaks = Vec::new();
+            let mut images = Vec::new();
+            for schedule in [crate::Schedule::Greedy, crate::Schedule::Iwls95] {
+                let config = Config {
+                    node_capacity: 1 << 15,
+                    partitioning: Partitioning::Conjunctive {
+                        cluster_node_limit: 0,
+                        schedule,
+                    },
+                    ..tiny_config()
+                };
+                let model = Model::<Oxidd>::new(&task, &config).unwrap();
+                let b = &model.backend;
+                let (mut peak, mut counts) = (0, Vec::new());
+                for states in probe_sets(&model) {
+                    for group in &model.concrete.groups {
+                        let (image, p) = group.image_with_peak(b, &states).unwrap();
+                        peak += p;
+                        counts.push(b.node_count(&image));
+                    }
+                }
+
+                peaks.push(peak);
+                images.push(counts);
+            }
+
+            eprintln!(
+                "{name}: summed peak nodes greedy {} iwls95 {}",
+                peaks[0], peaks[1]
+            );
+            assert_eq!(images[0], images[1], "{name}");
+        }
     }
 
     /// Whether `operator` affects two variables and one of its effect
@@ -602,6 +658,7 @@ mod tests {
         let config = Config {
             partitioning: Partitioning::Conjunctive {
                 cluster_node_limit: 0,
+                schedule: crate::Schedule::Greedy,
             },
             ..tiny_config()
         };

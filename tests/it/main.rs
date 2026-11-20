@@ -10,7 +10,7 @@ mod oracle;
 mod random;
 
 use sas_plus::Task;
-use symbolic_search::{Config, Partitioning, Solution, SymbolicTask, VariableOrder};
+use symbolic_search::{Config, Partitioning, Schedule, Solution, SymbolicTask, VariableOrder};
 
 /// Small BDD limits, so tests stay light on memory. Merged relation groups
 /// and the Gamer order.
@@ -32,10 +32,11 @@ const PER_OPERATOR: Config = Config {
 };
 
 /// [`SMALL`] with conjunctive partitioning, one cluster per conjunct, so
-/// early quantification runs at its finest.
+/// early quantification runs at its finest, in the IWLS95 order.
 const CONJUNCTIVE: Config = Config {
     partitioning: Partitioning::Conjunctive {
         cluster_node_limit: 0,
+        schedule: Schedule::Iwls95,
     },
     ..SMALL
 };

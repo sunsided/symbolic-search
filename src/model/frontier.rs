@@ -48,12 +48,45 @@ struct Key {
     g: u64,
 }
 
+/// The space a frontier searches: borrowed (the concrete space, PDBs), or
+/// owned by the frontier, so dropping a frozen `SymBA*` abstract search
+/// frees its projected relations too.
+pub(crate) enum SpaceRef<'a, B: Backend> {
+    /// A space that outlives the frontier.
+    Borrowed(&'a Space<B>),
+    /// A space that lives and dies with the frontier.
+    Owned(Box<Space<B>>),
+}
+
+impl<B: Backend> core::ops::Deref for SpaceRef<'_, B> {
+    type Target = Space<B>;
+
+    fn deref(&self) -> &Space<B> {
+        match self {
+            Self::Borrowed(space) => space,
+            Self::Owned(space) => space,
+        }
+    }
+}
+
+impl<'a, B: Backend> From<&'a Space<B>> for SpaceRef<'a, B> {
+    fn from(space: &'a Space<B>) -> Self {
+        Self::Borrowed(space)
+    }
+}
+
+impl<B: Backend> From<Space<B>> for SpaceRef<'_, B> {
+    fn from(space: Space<B>) -> Self {
+        Self::Owned(Box::new(space))
+    }
+}
+
 /// One direction of a cost-aware symbolic search.
 pub(crate) struct Frontier<'a, B: Backend> {
     /// The manager that owns every set.
     b: &'a B,
     /// The space searched.
-    space: &'a Space<B>,
+    space: SpaceRef<'a, B>,
     /// Whether this frontier steps with images or preimages.
     direction: Direction,
     /// How the next bucket is chosen.
@@ -76,11 +109,13 @@ impl<'a, B: Backend> Frontier<'a, B> {
     /// Out of memory in the backend.
     pub(crate) fn new(
         b: &'a B,
-        space: &'a Space<B>,
+        space: impl Into<SpaceRef<'a, B>>,
         direction: Direction,
         heuristic: Partition<B>,
         strategy: Strategy,
     ) -> BackendResult<Self> {
+        let space = space.into();
+        let start = space.start(direction).clone();
         let mut frontier = Self {
             b,
             space,
@@ -91,7 +126,7 @@ impl<'a, B: Backend> Frontier<'a, B> {
             entries: Vec::new(),
             closed: BTreeMap::new(),
         };
-        frontier.insert(0, space.start(direction))?;
+        frontier.insert(0, &start)?;
 
         Ok(frontier)
     }
@@ -240,13 +275,13 @@ impl<'a, B: Backend> Frontier<'a, B> {
         let mut generated = Vec::new();
         for group in &self.space.groups {
             let next = group.step(self.b, states, self.direction)?;
-            if self.b.is_empty(&next) {
-                continue;
+            if !self.b.is_empty(&next) {
+                generated.push((g.saturating_add(group.cost), next));
             }
+        }
 
-            let cost = g.saturating_add(group.cost);
-            self.insert(cost, &next)?;
-            generated.push((cost, next));
+        for (cost, next) in &generated {
+            self.insert(*cost, next)?;
         }
 
         Ok(generated)

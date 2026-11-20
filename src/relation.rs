@@ -189,6 +189,11 @@ impl<B: Backend> Relation<B> {
         )
     }
 
+    /// The affected variables, sorted and without duplicates.
+    pub(crate) fn affected(&self) -> &[VarId] {
+        &self.vars
+    }
+
     /// Number of nodes of the relation BDD.
     fn size(&self, b: &B) -> usize {
         b.node_count(&self.diagram)
@@ -254,10 +259,11 @@ pub(crate) fn conjunctive_groups<B: Backend>(
     encoding: &Encoding,
     operators: &[Operator],
     cluster_node_limit: usize,
+    schedule: crate::Schedule,
 ) -> BackendResult<Vec<Relation<B>>> {
     let mut groups = operators
         .iter()
-        .map(|operator| Relation::conjunctive(b, encoding, operator, cluster_node_limit))
+        .map(|operator| Relation::conjunctive(b, encoding, operator, cluster_node_limit, schedule))
         .collect::<BackendResult<Vec<_>>>()?;
     groups.sort_by_key(|group| group.cost);
 

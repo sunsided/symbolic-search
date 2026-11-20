@@ -5,7 +5,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use sas_plus::fdr::SasFile;
-use symbolic_search::{Config, Partitioning, SymbaConfig, SymbolicTask};
+use symbolic_search::{Config, Partitioning, Schedule, SymbaConfig, SymbolicTask};
 
 /// Compiles the gripper-with-costs fixture with merged disjunctive groups.
 fn gripper() -> SymbolicTask {
@@ -58,7 +58,8 @@ fn searches(c: &mut Criterion) {
 
 /// Forward and bidirectional Dijkstra under merged disjunctive groups, one
 /// disjunctive relation per operator (to separate the cost of lost merging
-/// from the cost of the conjuncts), and conjunctive clusters.
+/// from the cost of the conjuncts), and conjunctive clusters under the
+/// greedy and the IWLS95 schedule.
 fn partitionings(c: &mut Criterion) {
     let variants = [
         ("disjunctive_merged", Config::default()),
@@ -70,19 +71,41 @@ fn partitionings(c: &mut Criterion) {
             },
         ),
         (
-            "conjunctive_per_conjunct",
+            "conjunctive_per_conjunct_greedy",
             Config {
                 partitioning: Partitioning::Conjunctive {
                     cluster_node_limit: 0,
+                    schedule: Schedule::Greedy,
                 },
                 ..Config::default()
             },
         ),
         (
-            "conjunctive_clustered",
+            "conjunctive_per_conjunct_iwls95",
+            Config {
+                partitioning: Partitioning::Conjunctive {
+                    cluster_node_limit: 0,
+                    schedule: Schedule::Iwls95,
+                },
+                ..Config::default()
+            },
+        ),
+        (
+            "conjunctive_clustered_greedy",
             Config {
                 partitioning: Partitioning::Conjunctive {
                     cluster_node_limit: 64,
+                    schedule: Schedule::Greedy,
+                },
+                ..Config::default()
+            },
+        ),
+        (
+            "conjunctive_clustered_iwls95",
+            Config {
+                partitioning: Partitioning::Conjunctive {
+                    cluster_node_limit: 64,
+                    schedule: Schedule::Iwls95,
                 },
                 ..Config::default()
             },

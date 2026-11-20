@@ -138,8 +138,8 @@ pub enum Partitioning {
     Disjunctive,
     /// Conjunctive clusters: one relation per operator (no merging), split
     /// into one conjunct per affected variable plus the remaining
-    /// preconditions. Consecutive conjuncts in a greedy quantification
-    /// schedule are clustered while a cluster has at most
+    /// preconditions. Consecutive conjuncts in the quantification
+    /// `schedule` are clustered while a cluster has at most
     /// `cluster_node_limit` nodes; images and preimages quantify each
     /// variable right after its last cluster. `0` keeps one cluster per
     /// conjunct, `usize::MAX` one cluster per operator.
@@ -149,10 +149,13 @@ pub enum Partitioning {
     /// relations.
     ///
     /// ```
-    /// use symbolic_search::{Config, Partitioning};
+    /// use symbolic_search::{Config, Partitioning, Schedule};
     ///
     /// let config = Config {
-    ///     partitioning: Partitioning::Conjunctive { cluster_node_limit: 0 },
+    ///     partitioning: Partitioning::Conjunctive {
+    ///         cluster_node_limit: 0,
+    ///         schedule: Schedule::Iwls95,
+    ///     },
     ///     ..Config::default()
     /// };
     /// assert_ne!(config, Config::default());
@@ -160,7 +163,28 @@ pub enum Partitioning {
     Conjunctive {
         /// Largest BDD, in nodes, of a cluster of conjuncts.
         cluster_node_limit: usize,
+        /// The order in which conjuncts enter the product.
+        schedule: Schedule,
     },
+}
+
+/// The quantification schedule of [`Partitioning::Conjunctive`]: the order
+/// in which an operator's conjuncts are conjoined (and then clustered).
+///
+/// Both give the same images; they differ in intermediate BDD sizes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Schedule {
+    /// Most variables retired first: the conjunct after which the most
+    /// affected variables can be quantified. The default: on the gripper
+    /// fixtures its summed peak intermediate product is 4390 nodes against
+    /// 4404 for IWLS95.
+    #[default]
+    Greedy,
+    /// The IWLS95 benefit function of Ranjan et al. (1995): a weighted sum
+    /// of the retired fraction of the conjunct's support, its share of the
+    /// variables still to quantify, the next-state variables it introduces,
+    /// and how deep in the variable order its variables sit.
+    Iwls95,
 }
 
 impl Default for Config {
@@ -226,6 +250,25 @@ pub struct SymbaConfig {
     /// Wall-clock limit for the whole search, checked before every
     /// expansion; `None` for no limit.
     pub time_limit: Option<Duration>,
+    /// How each level of the abstraction hierarchy coarsens the last.
+    pub hierarchy: AbstractionHierarchy,
+}
+
+/// The abstraction hierarchy of [`SymbolicTask::symba_with`]: how each
+/// level coarsens the previous one. Variables are visited non-goal first,
+/// from the last id down, and every level is the exact induced abstraction
+/// of a projection of the state bits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AbstractionHierarchy {
+    /// Each level drops one more variable (a pattern database hierarchy).
+    #[default]
+    DropVariables,
+    /// Each level drops one more bit of one variable, low bits first, which
+    /// merges that variable's values pairwise: a shrink step in the spirit
+    /// of merge-and-shrink, without bisimulation. One round drops the
+    /// lowest remaining bit of every non-goal variable, then the goal
+    /// variables follow, so all variables coarsen evenly.
+    DropBits,
 }
 
 impl Default for SymbaConfig {
@@ -238,6 +281,7 @@ impl Default for SymbaConfig {
             abstract_slice: 8,
             max_expansions: None,
             time_limit: None,
+            hierarchy: AbstractionHierarchy::DropVariables,
         }
     }
 }
@@ -662,6 +706,7 @@ impl SymbolicTask {
             abstract_slice: usize::MAX,
             max_expansions: None,
             time_limit: None,
+            hierarchy: AbstractionHierarchy::DropVariables,
         })
     }
 
@@ -744,6 +789,58 @@ impl SymbolicTask {
         }
 
         Ok(self.wrap(self.model.pdb(pattern)?))
+    }
+
+    /// The canonical heuristic of a PDB collection: one symbolic PDB per
+    /// pattern (see [`SymbolicTask::pdb`]), combined by taking the maximum
+    /// over every maximal set of pairwise additive patterns of the sum of
+    /// their PDBs. Two patterns are additive when no operator has an effect
+    /// on a variable of each. Admissible and consistent, and at least as
+    /// informed as the best single PDB. No patterns give the blind
+    /// heuristic.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnknownVariable`] when a pattern names a variable the task
+    ///   does not have.
+    /// - [`Error::OutOfMemory`] when the node table fills up.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+    /// use symbolic_search::{Config, SymbolicTask};
+    ///
+    /// // Two independent counters: their PDBs add up.
+    /// let inc = |var, from, to| Operator {
+    ///     name: format!("inc{var}_{from}"),
+    ///     pre: vec![Fact::new(var, from)],
+    ///     eff: vec![Effect::new(Fact::new(var, to))],
+    ///     cost: 1,
+    /// };
+    /// let task = Task {
+    ///     variables: vec![Variable::new("a", 3), Variable::new("b", 3)],
+    ///     operators: vec![inc(0, 0, 1), inc(0, 1, 2), inc(1, 0, 1), inc(1, 1, 2)],
+    ///     initial: State(vec![0, 0]),
+    ///     goal: vec![Fact::new(0, 2), Fact::new(1, 2)],
+    ///     axioms: vec![],
+    /// };
+    /// let config = Config { node_capacity: 1 << 12, cache_capacity: 1 << 8, ..Config::default() };
+    /// let symbolic = SymbolicTask::new(&task, config)?;
+    ///
+    /// let canonical = symbolic.canonical_pdbs(&[vec![0], vec![1]])?;
+    /// assert_eq!(symbolic.evaluate(&canonical, &task.initial)?, Some(4));
+    /// let single = symbolic.pdb(&[0])?;
+    /// assert_eq!(symbolic.evaluate(&single, &task.initial)?, Some(2));
+    /// # Ok::<(), symbolic_search::Error>(())
+    /// ```
+    pub fn canonical_pdbs(&self, patterns: &[Vec<VarId>]) -> Result<Heuristic, Error> {
+        let num_vars = self.model.num_vars();
+        if let Some(&var) = patterns.iter().flatten().find(|&&v| v >= num_vars) {
+            return Err(Error::UnknownVariable(var));
+        }
+
+        Ok(self.wrap(self.model.canonical(patterns)?))
     }
 
     /// A heuristic from explicit estimates: each `(facts, h)` pair says that

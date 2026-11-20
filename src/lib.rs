@@ -20,10 +20,11 @@
 //!   zero costs included).
 //! - `BDDA*` and symbolic greedy best-first search with a [`Heuristic`]
 //!   stored as one BDD per `h` value: symbolic pattern databases
-//!   ([`SymbolicTask::pdb`]) or explicit estimates
+//!   ([`SymbolicTask::pdb`]), canonical PDB collections
+//!   ([`SymbolicTask::canonical_pdbs`]) or explicit estimates
 //!   ([`SymbolicTask::heuristic`]).
 //! - `SymBA*`: bidirectional `A*` with perimeter abstractions that drop
-//!   variables, resumable abstract searches, separate concrete and abstract
+//!   variables or single bits ([`AbstractionHierarchy`]), resumable abstract searches, separate concrete and abstract
 //!   node limits and an expansion and time budget ([`SymbaConfig`]).
 //!
 //! Every search reconstructs a plan as operator ids in execution order and
@@ -31,7 +32,7 @@
 //!
 //! ## Planned
 //!
-//! Axioms, mutex pruning, merge-and-shrink heuristics, time-based step
+//! Axioms, mutex pruning, full merge-and-shrink heuristics, time-based step
 //! estimates for `SymBA*`. See `docs/design.md` in the
 //! repository.
 //!
@@ -84,4 +85,7 @@ mod search;
 
 pub use error::Error;
 pub use order::VariableOrder;
-pub use search::{Config, Heuristic, Partitioning, Solution, SymbaConfig, SymbolicTask};
+pub use search::{
+    AbstractionHierarchy, Config, Heuristic, Partitioning, Schedule, Solution, SymbaConfig,
+    SymbolicTask,
+};
