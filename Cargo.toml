@@ -16,7 +16,12 @@ oxidd = { version = "0.13.0", default-features = false, features = ["manager-ind
 sas-plus = { version = "0.2.1", default-features = false }
 
 [dev-dependencies]
+criterion = { version = "0.8", default-features = false }
 sas-plus = { version = "0.2.1", features = ["fdr", "random"] }
+
+[[bench]]
+name = "search"
+harness = false
 
 [lints.rust]
 missing_docs = "warn"
