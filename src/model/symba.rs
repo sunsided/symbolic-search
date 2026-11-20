@@ -70,6 +70,9 @@ pub(crate) struct Stats {
     pub resumed: usize,
     /// Abstract searches frozen for passing the abstract node limit.
     pub frozen: usize,
+    /// Expansions paid for, concrete and abstract (one per hook call and
+    /// per abstract expansion).
+    pub expansions: u64,
 }
 
 /// The expansion and time budget of a run.
@@ -78,6 +81,8 @@ struct Budget {
     expansions: Option<u64>,
     /// When the run must stop, `None` for no limit.
     deadline: Option<Instant>,
+    /// Expansions paid for so far.
+    spent: u64,
 }
 
 impl Budget {
@@ -88,6 +93,7 @@ impl Budget {
             deadline: config
                 .time_limit
                 .and_then(|t| Instant::now().checked_add(t)),
+            spent: 0,
         }
     }
 
@@ -103,6 +109,10 @@ impl Budget {
             lower_bound: 0,
         };
         let out_of_time = self.deadline.is_some_and(|d| Instant::now() >= d);
+        if !out_of_time && self.expansions != Some(0) {
+            self.spent += 1;
+        }
+
         match &mut self.expansions {
             _ if out_of_time => Err(exhausted),
             Some(0) => Err(exhausted),
@@ -201,6 +211,8 @@ impl<B: Backend> Model<B> {
             side(Direction::Backward)?,
             &mut hook,
         )?;
+
+        stats.expansions = budget.spent;
 
         Ok((plan, stats))
     }
@@ -598,5 +610,85 @@ mod tests {
         }
 
         assert!(with_plan > 0);
+    }
+}
+
+#[cfg(test)]
+mod tuning {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::Config;
+    use crate::backend::Oxidd;
+
+    /// The solvable fixtures, parsed.
+    fn fixtures() -> Vec<(&'static str, sas_plus::Task)> {
+        ["gripper-unit", "gripper-costs", "conditional-effects"]
+            .into_iter()
+            .map(|name| {
+                let path = format!(
+                    "{}/tests/fixtures/{name}/output.sas",
+                    env!("CARGO_MANIFEST_DIR")
+                );
+                let text = std::fs::read_to_string(path).unwrap();
+                (
+                    name,
+                    sas_plus::fdr::SasFile::parse(&text).unwrap().to_task(),
+                )
+            })
+            .collect()
+    }
+
+    /// Grid search over `SymbaConfig` on the fixtures: prints, per config,
+    /// the summed expansions and the summed best-of-7 wall time. Run with
+    /// `cargo test --release --lib tuning -- --ignored --nocapture`; the
+    /// numbers in `docs/design.md` come from it.
+    #[test]
+    #[ignore = "measurement, not a check"]
+    fn tune_defaults_on_fixtures() {
+        let models: Vec<_> = fixtures()
+            .into_iter()
+            .map(|(name, task)| {
+                (
+                    name,
+                    Model::<Oxidd>::new(&task, &Config::for_task(&task)).unwrap(),
+                )
+            })
+            .collect();
+        let limits = [16, 64, 256, 1024, 10_000];
+        let hierarchies = [
+            AbstractionHierarchy::DropVariables,
+            AbstractionHierarchy::DropBits,
+        ];
+        for frontier_node_limit in limits {
+            for abstract_node_limit in limits {
+                for abstract_slice in [1, 8, usize::MAX] {
+                    for hierarchy in hierarchies {
+                        let config = SymbaConfig {
+                            frontier_node_limit,
+                            abstract_node_limit,
+                            abstract_slice,
+                            hierarchy,
+                            ..SymbaConfig::default()
+                        };
+                        let (mut expansions, mut time) = (0, Duration::ZERO);
+                        for (_, model) in &models {
+                            let mut best = Duration::MAX;
+                            for _ in 0..7 {
+                                let start = Instant::now();
+                                model.symba(&config).unwrap();
+                                best = best.min(start.elapsed());
+                            }
+                            expansions += model.symba(&config).unwrap().1.expansions;
+                            time += best;
+                        }
+
+                        eprintln!(
+                            "frontier {frontier_node_limit} abstract {abstract_node_limit} slice {abstract_slice} {hierarchy:?}: expansions {expansions} time {time:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

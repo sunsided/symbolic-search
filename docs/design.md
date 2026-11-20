@@ -314,7 +314,15 @@ either direction and in the concrete or a projected space.
   "unsolvable": `best` is the cheapest meeting traced to a plan (not
   proven optimal), `lower_bound` the bidirectional termination bound at
   the cut-off, which no unmet plan undercuts. `symba(limit)` sets
-  both node limits to `limit` with unbounded slices and no budget. Not done
+  both node limits to `limit` with unbounded slices and no budget.
+  Defaults (frontier and abstract limits 10⁴, slices of 1, dropping
+  variables) come from a grid over limits 16 to 10⁴, slices 1, 8 and
+  unbounded and both hierarchies on the three solvable fixtures
+  (`model::symba::tuning`, an ignored test): frontiers stay below 64
+  nodes there, so any limit from 64 up is plain bidirectional Dijkstra
+  (16 expansions in total); with limit 16, slices of 1 take 20 expansions
+  against 35 to 42 otherwise, and the hierarchies tie. The fixtures are
+  too small to tune the limits themselves; IPC tasks are needed for that. Not done
   compared to Torralba et al.: time-based step estimates, a hierarchy
   chosen by abstract search cost, merge-and-shrink with real merge
   strategies and bisimulation shrinking.

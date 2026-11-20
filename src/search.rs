@@ -272,13 +272,21 @@ pub enum AbstractionHierarchy {
 }
 
 impl Default for SymbaConfig {
-    /// Concrete and abstract node limits of 10⁴ nodes, slices of 8 abstract
-    /// expansions, no budget.
+    /// Concrete and abstract node limits of 10⁴ nodes, slices of one
+    /// abstract expansion, the variable-dropping hierarchy, no budget.
+    ///
+    /// Tuned on the fixtures (`model::symba::tuning`, summed over
+    /// gripper-unit, gripper-costs and conditional-effects): frontiers there
+    /// stay below 64 nodes, so every frontier limit from 64 up runs plain
+    /// bidirectional Dijkstra (16 expansions). When abstraction does kick in
+    /// (limit 16), slices of 1 need 20 expansions against 35 to 42 for
+    /// slices of 8 or unbounded ones, larger abstract limits never hurt, and
+    /// both hierarchies tie. 10⁴ keeps easy tasks free of abstract work.
     fn default() -> Self {
         Self {
             frontier_node_limit: 10_000,
             abstract_node_limit: 10_000,
-            abstract_slice: 8,
+            abstract_slice: 1,
             max_expansions: None,
             time_limit: None,
             hierarchy: AbstractionHierarchy::DropVariables,
