@@ -26,7 +26,8 @@
 //!   variables, resumable abstract searches, separate concrete and abstract
 //!   node limits and an expansion and time budget ([`SymbaConfig`]).
 //!
-//! Every search reconstructs a plan as operator ids in execution order.
+//! Every search reconstructs a plan as operator ids in execution order and
+//! returns it with its cost ([`Solution`]).
 //!
 //! ## Planned
 //!
@@ -61,8 +62,9 @@
 //!     ..Config::default()
 //! };
 //! let symbolic = SymbolicTask::new(&task, config)?;
-//! let plan = symbolic.forward_bfs()?.expect("the goal is reachable");
-//! assert_eq!(plan, [0, 1]);
+//! let solution = symbolic.forward_bfs()?.expect("the goal is reachable");
+//! assert_eq!(solution.plan, [0, 1]);
+//! assert_eq!(solution.cost, 2);
 //! # Ok::<(), symbolic_search::Error>(())
 //! ```
 //!
@@ -82,4 +84,4 @@ mod search;
 
 pub use error::Error;
 pub use order::VariableOrder;
-pub use search::{Config, Heuristic, Partitioning, SymbaConfig, SymbolicTask};
+pub use search::{Config, Heuristic, Partitioning, Solution, SymbaConfig, SymbolicTask};

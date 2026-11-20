@@ -98,6 +98,17 @@ impl Default for Config {
     }
 }
 
+/// A plan in execution order and its cost.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Solution {
+    /// Operator ids in execution order. Empty when the initial state is a
+    /// goal state.
+    pub plan: Vec<OpId>,
+    /// Sum of the plan's operator costs, as [`Task::validate_plan`] gives
+    /// it.
+    pub cost: u64,
+}
+
 /// Parameters of [`SymbolicTask::symba_with`].
 ///
 /// Build one with struct update syntax, so new fields do not break callers:
@@ -207,14 +218,14 @@ impl SymbolicTask {
 
     /// Symbolic forward breadth-first search from the initial state.
     ///
-    /// Returns a plan with the fewest operators (operator costs are ignored),
-    /// as operator ids in execution order, or `None` when no goal state is
+    /// Returns a plan with the fewest operators (operator costs are ignored
+    /// in the search; the solution still reports the plan's cost), or `None` when no goal state is
     /// reachable. The plan is empty when the initial state is a goal state.
     ///
     /// # Errors
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
-    pub fn forward_bfs(&self) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn forward_bfs(&self) -> Result<Option<Solution>, Error> {
         self.model.bfs(Direction::Forward)
     }
 
@@ -227,7 +238,7 @@ impl SymbolicTask {
     /// # Errors
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
-    pub fn backward_bfs(&self) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn backward_bfs(&self) -> Result<Option<Solution>, Error> {
         self.model.bfs(Direction::Backward)
     }
 
@@ -263,11 +274,12 @@ impl SymbolicTask {
     /// let config = Config { node_capacity: 1 << 10, cache_capacity: 1 << 8, ..Config::default() };
     ///
     /// let symbolic = SymbolicTask::new(&task, config)?;
-    /// let plan = symbolic.forward_dijkstra()?.expect("solvable");
-    /// assert_eq!(task.validate_plan(&plan), Some(2));
+    /// let solution = symbolic.forward_dijkstra()?.expect("solvable");
+    /// assert_eq!(task.validate_plan(&solution.plan), Some(2));
+    /// assert_eq!(solution.cost, 2);
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn forward_dijkstra(&self) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn forward_dijkstra(&self) -> Result<Option<Solution>, Error> {
         self.model
             .best_first(Direction::Forward, self.blind(), Strategy::Cheapest)
     }
@@ -279,7 +291,7 @@ impl SymbolicTask {
     /// # Errors
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
-    pub fn backward_dijkstra(&self) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn backward_dijkstra(&self) -> Result<Option<Solution>, Error> {
         self.model
             .best_first(Direction::Backward, self.blind(), Strategy::Cheapest)
     }
@@ -316,11 +328,12 @@ impl SymbolicTask {
     /// let config = Config { node_capacity: 1 << 10, cache_capacity: 1 << 8, ..Config::default() };
     /// let symbolic = SymbolicTask::new(&task, config)?;
     ///
-    /// let plan = symbolic.bidirectional_dijkstra()?.expect("solvable");
-    /// assert_eq!(plan, [1, 2]);
+    /// let solution = symbolic.bidirectional_dijkstra()?.expect("solvable");
+    /// assert_eq!(solution.plan, [1, 2]);
+    /// assert_eq!(solution.cost, 2);
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn bidirectional_dijkstra(&self) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn bidirectional_dijkstra(&self) -> Result<Option<Solution>, Error> {
         let (model, b) = (&self.model, self.model.backend());
         let side = |direction| {
             Frontier::new(
@@ -374,11 +387,12 @@ impl SymbolicTask {
     /// // The projection onto the counter is a perfect heuristic here.
     /// let pdb = symbolic.pdb(&[0])?;
     /// assert_eq!(symbolic.evaluate(&pdb, &task.initial)?, Some(4));
-    /// let plan = symbolic.astar(&pdb)?.expect("solvable");
-    /// assert_eq!(task.validate_plan(&plan), Some(4));
+    /// let solution = symbolic.astar(&pdb)?.expect("solvable");
+    /// assert_eq!(task.validate_plan(&solution.plan), Some(4));
+    /// assert_eq!(solution.cost, 4);
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn astar(&self, heuristic: &Heuristic) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn astar(&self, heuristic: &Heuristic) -> Result<Option<Solution>, Error> {
         let partition = self.own(heuristic)?;
 
         self.model
@@ -421,11 +435,12 @@ impl SymbolicTask {
     ///
     /// // A misleading estimate: "a" looks far from the goal, so GBFS goes direct.
     /// let h = symbolic.heuristic(&[(vec![Fact::new(0, 1)], 9)])?;
-    /// let plan = symbolic.greedy(&h)?.expect("solvable");
-    /// assert_eq!(task.validate_plan(&plan), Some(5));
+    /// let solution = symbolic.greedy(&h)?.expect("solvable");
+    /// assert_eq!(task.validate_plan(&solution.plan), Some(5));
+    /// assert_eq!(solution.cost, 5);
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn greedy(&self, heuristic: &Heuristic) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn greedy(&self, heuristic: &Heuristic) -> Result<Option<Solution>, Error> {
         let partition = self.own(heuristic)?;
 
         self.model
@@ -464,12 +479,12 @@ impl SymbolicTask {
     /// let symbolic = SymbolicTask::new(&task, config)?;
     ///
     /// for limit in [1, 64, usize::MAX] {
-    ///     let plan = symbolic.symba(limit)?.expect("solvable");
-    ///     assert_eq!(task.validate_plan(&plan), Some(2));
+    ///     let solution = symbolic.symba(limit)?.expect("solvable");
+    ///     assert_eq!(solution.cost, 2);
     /// }
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn symba(&self, node_limit: usize) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn symba(&self, node_limit: usize) -> Result<Option<Solution>, Error> {
         self.symba_with(&SymbaConfig {
             frontier_node_limit: node_limit,
             abstract_node_limit: node_limit,
@@ -524,14 +539,18 @@ impl SymbolicTask {
     /// let symbolic = SymbolicTask::new(&task, config)?;
     ///
     /// let symba = SymbaConfig { frontier_node_limit: 1, abstract_slice: 1, ..SymbaConfig::default() };
-    /// let plan = symbolic.symba_with(&symba)?.expect("solvable");
-    /// assert_eq!(task.validate_plan(&plan), Some(2));
+    /// let solution = symbolic.symba_with(&symba)?.expect("solvable");
+    /// assert_eq!(task.validate_plan(&solution.plan), Some(2));
+    /// assert_eq!(solution.cost, 2);
     ///
     /// let starved = SymbaConfig { max_expansions: Some(0), ..symba };
-    /// assert_eq!(symbolic.symba_with(&starved), Err(Error::BudgetExhausted));
+    /// let Err(Error::BudgetExhausted { best, lower_bound }) = symbolic.symba_with(&starved) else {
+    ///     panic!("no expansion is allowed");
+    /// };
+    /// assert_eq!((best, lower_bound), (None, 0));
     /// # Ok::<(), symbolic_search::Error>(())
     /// ```
-    pub fn symba_with(&self, config: &SymbaConfig) -> Result<Option<Vec<OpId>>, Error> {
+    pub fn symba_with(&self, config: &SymbaConfig) -> Result<Option<Solution>, Error> {
         Ok(self.model.symba(config)?.0)
     }
 

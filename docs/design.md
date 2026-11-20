@@ -7,7 +7,8 @@ symbolic BFS and Dijkstra, bidirectional search, BDDA\*, SymBA\* and, later,
 symbolic abstraction heuristics.
 
 Input is a `sas_plus::Task` (crates.io `sas-plus` 0.2.1). Output is a
-sequential plan as a `Vec<sas_plus::OpId>` in execution order.
+`Solution`: a sequential plan as a `Vec<sas_plus::OpId>` in execution
+order, plus its cost (the sum of its operators' costs).
 
 ## Pipeline
 
@@ -279,7 +280,10 @@ either direction and in the concrete or a projected space.
   valid. A unit test pins that a search paused after every expansion ends
   with the perimeter of an uninterrupted run. `max_expansions` and
   `time_limit` cap concrete plus abstract expansions and fail with
-  `Error::BudgetExhausted`, never with "unsolvable". `symba(limit)` sets
+  `Error::BudgetExhausted { best, lower_bound }`, never with
+  "unsolvable": `best` is the cheapest meeting traced to a plan (not
+  proven optimal), `lower_bound` the bidirectional termination bound at
+  the cut-off, which no unmet plan undercuts. `symba(limit)` sets
   both node limits to `limit` with unbounded slices and no budget. Not done
   compared to Torralba et al.: time-based step estimates, a hierarchy
   chosen by abstract search cost, merge-and-shrink abstractions.
@@ -459,10 +463,6 @@ crate needs one (see "Cross-crate needs").
   on `OutOfMemory`?
 - Default `merge_node_limit` 100 000 (SymBA\*'s value) and Gamer as the
   default order: keep, or tune on IPC tasks?
-- `SymbolicTask::symba` takes only a node limit. Should it get a parameter
-  struct (abstraction order, separate abstract-search limit, time budget)?
-- Plans are returned without their cost; `Task::validate_plan` gives it.
-  Return `(plan, cost)` instead?
 
 ## References
 

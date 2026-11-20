@@ -29,7 +29,7 @@ use sas_plus::{OpId, Task};
 use crate::backend::{Backend, BackendResult, Capacity};
 use crate::encoding::Encoding;
 use crate::relation::{self, Relation};
-use crate::{Config, Error, Partitioning};
+use crate::{Config, Error, Partitioning, Solution};
 use frontier::Frontier;
 use space::Space;
 
@@ -188,7 +188,7 @@ impl<B: Backend> Model<B> {
     /// # Errors
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
-    pub(crate) fn bfs(&self, direction: Direction) -> Result<Option<Vec<OpId>>, Error> {
+    pub(crate) fn bfs(&self, direction: Direction) -> Result<Option<Solution>, Error> {
         let (start, target) = (
             self.concrete.start(direction),
             self.concrete.start(direction.reverse()),
@@ -199,7 +199,14 @@ impl<B: Backend> Model<B> {
 
         let plan = self.trace(&found, direction.reverse())?;
 
-        Ok(Some(orient(plan, direction)))
+        Ok(Some(self.solution(orient(plan, direction))))
+    }
+
+    /// `plan` with its cost, the sum of its operators' costs.
+    pub(crate) fn solution(&self, plan: Vec<OpId>) -> Solution {
+        let cost = plan.iter().map(|&op| self.operators[op].cost).sum();
+
+        Solution { plan, cost }
     }
 
     /// Expands layers from `start` until one meets `target` or no new state
@@ -614,7 +621,10 @@ mod tests {
             }
         }
 
-        assert_eq!(model.bfs(Direction::Forward).unwrap(), Some(vec![0]));
+        assert_eq!(
+            model.bfs(Direction::Forward).unwrap().map(|s| s.plan),
+            Some(vec![0])
+        );
     }
 
     /// With small node limits, `SymBA*` installs informative (not blind)
@@ -636,8 +646,8 @@ mod tests {
                 let (plan, stats) = model.symba(&config).unwrap();
 
                 installed += stats.installed;
-                if let Some(plan) = plan {
-                    assert!(task.validate_plan(&plan).is_some());
+                if let Some(solution) = plan {
+                    assert_eq!(task.validate_plan(&solution.plan), Some(solution.cost));
                 }
             }
 

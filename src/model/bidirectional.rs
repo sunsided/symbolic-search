@@ -23,10 +23,10 @@
 
 use sas_plus::OpId;
 
-use crate::Error;
 use crate::backend::{Backend, BackendResult};
 use crate::model::frontier::Frontier;
 use crate::model::{Direction, Model};
+use crate::{Error, Solution};
 
 /// The cheapest meeting of the two frontiers so far.
 struct Meeting<S> {
@@ -55,13 +55,14 @@ impl<B: Backend> Model<B> {
     /// # Errors
     ///
     /// [`Error::OutOfMemory`] when the node table fills up, or any error of
-    /// `hook`.
+    /// `hook`. An [`Error::BudgetExhausted`] from `hook` is filled in with
+    /// the cheapest plan met so far and the current lower bound.
     pub(crate) fn bidirectional<'a>(
         &self,
         mut forward: Frontier<'a, B>,
         mut backward: Frontier<'a, B>,
         hook: &mut Hook<'_, 'a, B>,
-    ) -> Result<Option<Vec<OpId>>, Error> {
+    ) -> Result<Option<Solution>, Error> {
         let mut best: Option<Meeting<B::Set>> = None;
         while let Some(bound) = lower_bound(&forward, &backward) {
             if best.as_ref().is_some_and(|m| m.cost <= bound) {
@@ -73,7 +74,10 @@ impl<B: Backend> Model<B> {
             } else {
                 (&mut backward, &mut forward)
             };
-            hook(this)?;
+            if let Err(error) = hook(this) {
+                return Err(self.enrich(error, &forward, &backward, best)?);
+            }
+
             let Some((g, states)) = this.pop()? else {
                 continue;
             };
@@ -88,11 +92,55 @@ impl<B: Backend> Model<B> {
             return Ok(None);
         };
 
-        let mut plan = self.trace_frontier(&forward, meeting.state.clone(), meeting.g_forward)?;
-        plan.reverse();
-        plan.extend(self.trace_frontier(&backward, meeting.state, meeting.g_backward)?);
+        Ok(Some(self.solution(
+            self.trace_meeting(&forward, &backward, meeting)?,
+        )))
+    }
 
-        Ok(Some(plan))
+    /// The plan in execution order through `meeting`.
+    ///
+    /// # Errors
+    ///
+    /// Out of memory in the backend.
+    fn trace_meeting(
+        &self,
+        forward: &Frontier<'_, B>,
+        backward: &Frontier<'_, B>,
+        meeting: Meeting<B::Set>,
+    ) -> BackendResult<Vec<OpId>> {
+        let mut plan = self.trace_frontier(forward, meeting.state.clone(), meeting.g_forward)?;
+        plan.reverse();
+        plan.extend(self.trace_frontier(backward, meeting.state, meeting.g_backward)?);
+
+        Ok(plan)
+    }
+
+    /// `error` from the hook, with [`Error::BudgetExhausted`] filled in: the
+    /// plan through `best` and the termination bound, which no unmet plan
+    /// undercuts (so the optimum is at least the smaller of the two).
+    ///
+    /// # Errors
+    ///
+    /// Out of memory in the backend while tracing the plan.
+    fn enrich(
+        &self,
+        error: Error,
+        forward: &Frontier<'_, B>,
+        backward: &Frontier<'_, B>,
+        best: Option<Meeting<B::Set>>,
+    ) -> Result<Error, Error> {
+        if !matches!(error, Error::BudgetExhausted { .. }) {
+            return Ok(error);
+        }
+
+        let bound = lower_bound(forward, backward).unwrap_or(u64::MAX);
+        let lower_bound = best.as_ref().map_or(bound, |m| m.cost.min(bound));
+        let best = match best {
+            Some(meeting) => Some(self.solution(self.trace_meeting(forward, backward, meeting)?)),
+            None => None,
+        };
+
+        Ok(Error::BudgetExhausted { best, lower_bound })
     }
 
     /// Intersects `states`, found at cost `g` by `this`, with the closed

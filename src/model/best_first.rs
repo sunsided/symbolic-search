@@ -12,13 +12,11 @@
 //! optimal cost: every bucket that could lead to a cheaper goal has a
 //! smaller `g + h` and is popped first.
 
-use sas_plus::OpId;
-
-use crate::Error;
 use crate::backend::Backend;
 use crate::model::frontier::{Frontier, Strategy};
 use crate::model::heuristic::Partition;
 use crate::model::{Direction, Model, orient};
+use crate::{Error, Solution};
 
 impl<B: Backend> Model<B> {
     /// Best-first search in `direction` with `heuristic` and `strategy`.
@@ -35,7 +33,7 @@ impl<B: Backend> Model<B> {
         direction: Direction,
         heuristic: Partition<B>,
         strategy: Strategy,
-    ) -> Result<Option<Vec<OpId>>, Error> {
+    ) -> Result<Option<Solution>, Error> {
         let b = &self.backend;
         let target = self.concrete.start(direction.reverse());
         let mut frontier = Frontier::new(b, &self.concrete, direction, heuristic, strategy)?;
@@ -44,7 +42,7 @@ impl<B: Backend> Model<B> {
             if !b.is_empty(&hit) {
                 let state = self.pick_state(&hit)?;
                 let plan = self.trace_frontier(&frontier, state, g)?;
-                return Ok(Some(orient(plan, direction)));
+                return Ok(Some(self.solution(orient(plan, direction))));
             }
 
             frontier.expand(g, &states)?;

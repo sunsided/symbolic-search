@@ -48,16 +48,15 @@
 use std::cell::OnceCell;
 use std::time::Instant;
 
-use sas_plus::{OpId, VarId};
+use sas_plus::VarId;
 
-use crate::Error;
-use crate::SymbaConfig;
 use crate::backend::Backend;
 use crate::model::abstraction::perimeter_of;
 use crate::model::frontier::{Frontier, Strategy};
 use crate::model::heuristic::Partition;
 use crate::model::space::Space;
 use crate::model::{Direction, Model};
+use crate::{Error, Solution, SymbaConfig};
 
 /// Counters of one `SymBA*` run, for tests and tuning.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -95,10 +94,15 @@ impl Budget {
     ///
     /// [`Error::BudgetExhausted`] when no expansion or time is left.
     fn charge(&mut self) -> Result<(), Error> {
+        // The bidirectional driver fills in the best plan and the bound.
+        let exhausted = Error::BudgetExhausted {
+            best: None,
+            lower_bound: 0,
+        };
         let out_of_time = self.deadline.is_some_and(|d| Instant::now() >= d);
         match &mut self.expansions {
-            _ if out_of_time => Err(Error::BudgetExhausted),
-            Some(0) => Err(Error::BudgetExhausted),
+            _ if out_of_time => Err(exhausted),
+            Some(0) => Err(exhausted),
             Some(left) => {
                 *left -= 1;
                 Ok(())
@@ -160,7 +164,7 @@ impl<B: Backend> Model<B> {
     ///
     /// - [`Error::BudgetExhausted`] when the budget of `config` runs out.
     /// - [`Error::OutOfMemory`] when the node table fills up.
-    pub(crate) fn symba(&self, config: &SymbaConfig) -> Result<(Option<Vec<OpId>>, Stats), Error> {
+    pub(crate) fn symba(&self, config: &SymbaConfig) -> Result<(Option<Solution>, Stats), Error> {
         let b = &self.backend;
         let drop_order = self.drop_order();
         let spaces: Vec<OnceCell<Space<B>>> = drop_order.iter().map(|_| OnceCell::new()).collect();
@@ -464,8 +468,7 @@ mod tests {
 
             resumed += stats.resumed;
             frozen += stats.frozen;
-            let cost = |plan: Option<Vec<OpId>>| plan.map(|p| task.validate_plan(&p).unwrap());
-            assert_eq!(cost(plan), cost(reference), "seed {seed}");
+            assert_eq!(cost(&task, plan), cost(&task, reference), "seed {seed}");
         }
 
         assert!(
@@ -495,7 +498,8 @@ mod tests {
             },
         ];
         for config in starved {
-            assert_eq!(model.symba(&config).unwrap_err(), Error::BudgetExhausted);
+            let error = model.symba(&config).unwrap_err();
+            assert!(matches!(error, Error::BudgetExhausted { best: None, .. }));
         }
 
         let ample = SymbaConfig {
@@ -504,7 +508,50 @@ mod tests {
             ..base
         };
         let plan = |config| model.symba(&config).unwrap().0;
-        let cost = |plan: Option<Vec<OpId>>| plan.map(|p| task.validate_plan(&p).unwrap());
-        assert_eq!(cost(plan(ample)), cost(plan(base)));
+        assert_eq!(cost(&task, plan(ample)), cost(&task, plan(base)));
+    }
+
+    /// The cost of `solution`, checked against the validator.
+    fn cost(task: &sas_plus::Task, solution: Option<Solution>) -> Option<u64> {
+        solution.map(|s| {
+            assert_eq!(task.validate_plan(&s.plan), Some(s.cost));
+            s.cost
+        })
+    }
+
+    /// Every budget cut-off reports a lower bound at most the optimum and,
+    /// when it has one, a valid plan at least the optimum. Some cut-offs
+    /// come after a first meeting, so a plan is reported.
+    #[test]
+    fn exhausted_budget_reports_best_plan_and_bound() {
+        let mut with_plan = 0;
+        for seed in 0..64 {
+            let (task, model) = model(seed);
+            let base = SymbaConfig {
+                frontier_node_limit: usize::MAX,
+                ..SymbaConfig::default()
+            };
+            let Some(optimum) = cost(&task, model.symba(&base).unwrap().0) else {
+                continue;
+            };
+
+            for budget in 0..40 {
+                let config = SymbaConfig {
+                    max_expansions: Some(budget),
+                    ..base
+                };
+                let Err(Error::BudgetExhausted { best, lower_bound }) = model.symba(&config) else {
+                    continue;
+                };
+
+                assert!(lower_bound <= optimum, "seed {seed}, budget {budget}");
+                if let Some(best) = cost(&task, best) {
+                    assert!(best >= optimum);
+                    with_plan += 1;
+                }
+            }
+        }
+
+        assert!(with_plan > 0);
     }
 }

@@ -4,6 +4,7 @@ use core::fmt;
 
 use sas_plus::{Fact, TaskError, VarId};
 
+use crate::Solution;
 use crate::backend::OutOfMemory;
 
 /// Why a symbolic task could not be built or searched.
@@ -32,7 +33,13 @@ pub enum Error {
     /// A search ran out of the expansion or time budget it was given (see
     /// [`crate::SymbaConfig`]) before it proved a plan optimal or the task
     /// unsolvable.
-    BudgetExhausted,
+    BudgetExhausted {
+        /// The cheapest plan found so far, not proven optimal.
+        best: Option<Solution>,
+        /// A lower bound on the optimal plan cost; equals `best`'s cost
+        /// when that plan is in fact optimal.
+        lower_bound: u64,
+    },
 }
 
 impl fmt::Display for Error {
@@ -47,7 +54,16 @@ impl fmt::Display for Error {
                 write!(f, "invalid fact: variable {} = {}", fact.var, fact.value)
             }
             Self::ForeignHeuristic => write!(f, "the heuristic belongs to another symbolic task"),
-            Self::BudgetExhausted => write!(f, "the search budget is exhausted"),
+            Self::BudgetExhausted { best, lower_bound } => {
+                write!(
+                    f,
+                    "the search budget is exhausted (lower bound {lower_bound}"
+                )?;
+                match best {
+                    Some(best) => write!(f, ", best plan cost {})", best.cost),
+                    None => write!(f, ", no plan yet)"),
+                }
+            }
         }
     }
 }

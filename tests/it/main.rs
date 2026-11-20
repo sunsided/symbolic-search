@@ -9,7 +9,7 @@ mod oracle;
 mod random;
 
 use sas_plus::Task;
-use symbolic_search::{Config, Partitioning, SymbolicTask, VariableOrder};
+use symbolic_search::{Config, Partitioning, Solution, SymbolicTask, VariableOrder};
 
 /// Small BDD limits, so tests stay light on memory. Merged relation groups
 /// and the Gamer order.
@@ -48,8 +48,14 @@ fn symbolic_plans_with(task: &Task, config: Config) -> (Option<Vec<usize>>, Opti
     let symbolic = SymbolicTask::new(task, config).expect("task compiles");
     let forward = symbolic.forward_bfs().expect("forward search fits");
     let backward = symbolic.backward_bfs().expect("backward search fits");
+    let plan = |solution: Option<Solution>| {
+        solution.map(|s| {
+            assert_eq!(validated_cost(task, &s, "bfs"), s.cost);
+            s.plan
+        })
+    };
 
-    (forward, backward)
+    (plan(forward), plan(backward))
 }
 
 /// Plans of both symbolic BFS directions on `task` under [`SMALL`].
@@ -79,9 +85,14 @@ fn check_against_oracle(task: &Task) -> Option<usize> {
     expected
 }
 
-/// The cost of `plan` by the independent validator, panicking with `what`
-/// when the plan is invalid.
-fn validated_cost(task: &Task, plan: &[usize], what: &str) -> u64 {
-    task.validate_plan(plan)
-        .unwrap_or_else(|| panic!("{what}: plan {plan:?} is invalid"))
+/// The cost of `solution`'s plan by the independent validator, panicking
+/// with `what` when the plan is invalid or the reported cost is wrong.
+fn validated_cost(task: &Task, solution: &Solution, what: &str) -> u64 {
+    let plan = &solution.plan;
+    let cost = task
+        .validate_plan(plan)
+        .unwrap_or_else(|| panic!("{what}: plan {plan:?} is invalid"));
+    assert_eq!(cost, solution.cost, "{what}: reported cost");
+
+    cost
 }

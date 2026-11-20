@@ -184,7 +184,7 @@ fn all_zero_costs() {
         .and_then(|s| s.bidirectional_dijkstra())
         .expect("search fits")
         .expect("solvable");
-    assert_eq!(plan.len(), 3);
+    assert_eq!(plan.plan.len(), 3);
 }
 
 /// Gripper with action costs: the cost optimum is 7, not the BFS plan.
