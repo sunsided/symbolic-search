@@ -479,23 +479,25 @@ mod tests {
         }
     }
 
-    /// With a node limit of 1, `SymBA*` installs abstraction heuristics and
-    /// still finds a plan.
+    /// With small node limits, `SymBA*` installs informative (not blind)
+    /// abstraction heuristics and still finds a plan.
     #[test]
-    fn symba_installs_abstractions() {
-        let mut installed = 0;
-        for seed in 0..16 {
-            let task = random(seed);
-            let model = Model::<Oxidd>::new(&task, &tiny_config()).unwrap();
+    fn symba_installs_informative_abstractions() {
+        for limit in [1, 4, 8, 16] {
+            let mut installed = 0;
+            for seed in 0..16 {
+                let task = random(seed);
+                let model = Model::<Oxidd>::new(&task, &tiny_config()).unwrap();
 
-            let (plan, count) = model.symba(1).unwrap();
+                let (plan, count) = model.symba(limit).unwrap();
 
-            installed += count;
-            if let Some(plan) = plan {
-                assert!(task.validate_plan(&plan).is_some());
+                installed += count;
+                if let Some(plan) = plan {
+                    assert!(task.validate_plan(&plan).is_some());
+                }
             }
-        }
 
-        assert!(installed > 0);
+            assert!(installed > 0, "limit {limit}");
+        }
     }
 }

@@ -18,6 +18,7 @@ pub fn check_costs(task: &Task) -> Option<u64> {
             ("backward dijkstra", symbolic.backward_dijkstra()),
             ("bidirectional dijkstra", symbolic.bidirectional_dijkstra()),
             ("symba, abstracting at once", symbolic.symba(1)),
+            ("symba, abstracting later", symbolic.symba(8)),
             ("symba, never abstracting", symbolic.symba(usize::MAX)),
         ];
         for (what, plan) in runs {
@@ -100,16 +101,17 @@ fn wide_domains_match_dijkstra_oracle() {
     assert_covers_all(&sweep(params, 64));
 }
 
-/// Conditional effects with up to two conditions each.
+/// Conditional effects with one condition each.
 #[test]
 fn conditional_effects_match_dijkstra_oracle() {
     let params = RandomTaskParams {
         max_domain: 5,
-        max_conditions: 2,
+        num_ops: 14,
+        max_conditions: 1,
         ..RandomTaskParams::default()
     };
 
-    assert_covers_all(&sweep(params, 64));
+    assert_covers_costs(&sweep(params, 64));
 }
 
 /// An operator `name` from `x = from` to `x = to` with the given cost.

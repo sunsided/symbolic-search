@@ -69,7 +69,8 @@ impl<B: Backend> Model<B> {
     }
 
     /// Runs a blind Dijkstra in `space` in `direction` until it is exhausted
-    /// or its next bucket has more than `node_limit` nodes, and turns the
+    /// or, after the first expansion, its next bucket has more than
+    /// `node_limit` nodes, and turns the
     /// closed layers into a heuristic for the opposite direction.
     ///
     /// Closed states get their abstract distance. When the search stopped
@@ -88,11 +89,13 @@ impl<B: Backend> Model<B> {
         let b = &self.backend;
         let mut frontier =
             Frontier::new(b, space, direction, Partition::zero(b), Strategy::Cheapest)?;
-        while frontier.next_size() <= node_limit {
-            let Some((g, states)) = frontier.pop()? else {
-                break;
-            };
+        // The first bucket is always expanded, so even a tiny limit gives an
+        // informed perimeter.
+        while let Some((g, states)) = frontier.pop()? {
             frontier.expand(g, &states)?;
+            if frontier.next_size() > node_limit {
+                break;
+            }
         }
 
         let pairs = frontier

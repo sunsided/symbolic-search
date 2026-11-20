@@ -17,8 +17,10 @@
 //! backward from the abstract goal for the forward frontier, forward from the
 //! abstract initial state for the backward frontier. Abstraction `k` drops
 //! `k` variables, non-goal variables first, so each new abstraction is
-//! coarser and cheaper than the last. The abstract search runs until its own
-//! next bucket passes the node limit; the perimeter heuristic is admissible
+//! coarser and cheaper than the last. The abstract search expands at least
+//! its start, then runs until its own next bucket passes the node limit; a
+//! perimeter that comes out blind is skipped. The perimeter heuristic is
+//! admissible
 //! and consistent, and so is the maximum with the old heuristic, which keeps
 //! the bidirectional termination bound valid.
 //!
@@ -40,7 +42,8 @@ impl<B: Backend> Model<B> {
     /// abstraction and bounds each abstract search.
     ///
     /// Returns an optimal plan in execution order, or `None` when the goal is
-    /// unreachable, plus the number of abstraction heuristics installed.
+    /// unreachable, plus the number of informative (not blind) abstraction
+    /// heuristics installed.
     ///
     /// # Errors
     ///
@@ -75,6 +78,10 @@ impl<B: Backend> Model<B> {
             let space = self.project(&drop_order[..*level])?;
             *level += 1;
             let perimeter = self.perimeter(&space, frontier.direction().reverse(), node_limit)?;
+            if perimeter.is_blind(b) {
+                return Ok(());
+            }
+
             let combined = frontier.heuristic().max(b, &perimeter)?;
             frontier.set_heuristic(combined)?;
             installed += 1;

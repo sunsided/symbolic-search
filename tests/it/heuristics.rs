@@ -107,8 +107,9 @@ fn check_pdb_values(task: &Task) {
         } else {
             // `None` (dead) counts as infinity in both orders.
             assert!(symbolic_h.is_none_or(|h| explicit_h.is_some_and(|e| e <= h)));
-            if let Some(h) = symbolic_h {
-                assert!(h_star(&state).is_none_or(|star| h <= star), "admissible");
+            match symbolic_h {
+                Some(h) => assert!(h_star(&state).is_none_or(|star| h <= star), "admissible"),
+                None => assert!(h_star(&state).is_none(), "only real dead ends"),
             }
         }
     }

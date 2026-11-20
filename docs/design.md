@@ -247,7 +247,8 @@ either direction and in the concrete or a projected space.
   When the side about to expand has a next bucket over the node limit, an
   abstraction that drops one more variable (non-goal variables first, from
   the last id down) is built, and a blind abstract search runs in the
-  opposite direction until its own next bucket passes the limit. Closed
+  opposite direction: it expands at least its start, then stops once its
+  own next bucket passes the limit. A blind result is skipped. Closed
   abstract states get their distance, all others the smallest open cost (the
   perimeter), or dead when the abstract search ran out. The side's
   heuristic becomes the maximum of the old one and the perimeter, and its
@@ -339,7 +340,7 @@ crate needs one (see "Cross-crate needs").
   staying inside valid codes.
 - **Costs.** An explicit-state Dijkstra (`tests/it/oracle.rs`) gives the
   optimal cost. Forward, backward and bidirectional Dijkstra and SymBA\*
-  (node limit 1, so it abstracts at once, and `usize::MAX`, so it never
+  (node limits 1 and 8, which abstract, and `usize::MAX`, which never
   does) must return plans whose `Task::validate_plan` cost equals it, on
   random sweeps with costs 1 to 5. Sweeps assert they saw trivial, solved
   and unsolvable tasks, and the default and wide sweeps also a task where
@@ -355,7 +356,8 @@ crate needs one (see "Cross-crate needs").
 - **Options.** Every oracle check runs under both extremes: merged groups
   with the Gamer order, and one relation per operator with the task order.
 - **Unit tests.** Merged groups step like the union of their operators;
-  SymBA\* with node limit 1 installs abstractions; partition maximum and
+  SymBA\* with node limits 1 to 16 installs informative (not
+  blind) perimeters; partition maximum and
   overlap rules; Gamer pulls linked variables together.
 - **Memory.** Tests use `node_capacity` 2¹⁵ and `cache_capacity` 2¹² (unit
   tests 2¹² and 2⁸); a test that exceeds them fails loudly.

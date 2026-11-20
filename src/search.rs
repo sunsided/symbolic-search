@@ -197,6 +197,33 @@ impl SymbolicTask {
     /// # Errors
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+    /// use symbolic_search::{Config, SymbolicTask};
+    ///
+    /// let op = |name: &str, from, to, cost| Operator {
+    ///     name: name.into(),
+    ///     pre: vec![Fact::new(0, from)],
+    ///     eff: vec![Effect::new(Fact::new(0, to))],
+    ///     cost,
+    /// };
+    /// let task = Task {
+    ///     variables: vec![Variable::new("at", 3)],
+    ///     operators: vec![op("direct", 0, 2, 5), op("a", 0, 1, 1), op("b", 1, 2, 1)],
+    ///     initial: State(vec![0]),
+    ///     goal: vec![Fact::new(0, 2)],
+    ///     axioms: vec![],
+    /// };
+    /// let config = Config { node_capacity: 1 << 10, cache_capacity: 1 << 8, ..Config::default() };
+    /// let symbolic = SymbolicTask::new(&task, config)?;
+    ///
+    /// let plan = symbolic.bidirectional_dijkstra()?.expect("solvable");
+    /// assert_eq!(plan, [1, 2]);
+    /// # Ok::<(), symbolic_search::Error>(())
+    /// ```
     pub fn bidirectional_dijkstra(&self) -> Result<Option<Vec<OpId>>, Error> {
         let (model, b) = (&self.model, self.model.backend());
         let side = |direction| {
@@ -273,6 +300,35 @@ impl SymbolicTask {
     ///
     /// - [`Error::ForeignHeuristic`] when `heuristic` belongs to another task.
     /// - [`Error::OutOfMemory`] when the node table fills up.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+    /// use symbolic_search::{Config, SymbolicTask};
+    ///
+    /// let op = |name: &str, from, to, cost| Operator {
+    ///     name: name.into(),
+    ///     pre: vec![Fact::new(0, from)],
+    ///     eff: vec![Effect::new(Fact::new(0, to))],
+    ///     cost,
+    /// };
+    /// let task = Task {
+    ///     variables: vec![Variable::new("at", 3)],
+    ///     operators: vec![op("direct", 0, 2, 5), op("a", 0, 1, 1), op("b", 1, 2, 1)],
+    ///     initial: State(vec![0]),
+    ///     goal: vec![Fact::new(0, 2)],
+    ///     axioms: vec![],
+    /// };
+    /// let config = Config { node_capacity: 1 << 10, cache_capacity: 1 << 8, ..Config::default() };
+    /// let symbolic = SymbolicTask::new(&task, config)?;
+    ///
+    /// // A misleading estimate: "a" looks far from the goal, so GBFS goes direct.
+    /// let h = symbolic.heuristic(&[(vec![Fact::new(0, 1)], 9)])?;
+    /// let plan = symbolic.greedy(&h)?.expect("solvable");
+    /// assert_eq!(task.validate_plan(&plan), Some(5));
+    /// # Ok::<(), symbolic_search::Error>(())
+    /// ```
     pub fn greedy(&self, heuristic: &Heuristic) -> Result<Option<Vec<OpId>>, Error> {
         let partition = self.own(heuristic)?;
 
@@ -287,14 +343,45 @@ impl SymbolicTask {
     /// Both directions start blind. When the side about to expand has a
     /// bigger next set than the limit, an abstract search in the opposite
     /// direction runs on a domain abstraction that drops one more variable
-    /// (non-goal variables first), bounded by the same limit. Its perimeter
-    /// becomes that side's heuristic (maximised with the previous one). The
-    /// plan is always cheapest; the limit only trades concrete for abstract
-    /// work. `usize::MAX` gives bidirectional Dijkstra.
+    /// (non-goal variables first). It expands at least its start, then stops
+    /// once its own next set passes the same limit. Its perimeter becomes
+    /// that side's heuristic (maximised with the previous one). The plan is
+    /// always cheapest; the limit only trades concrete for abstract work.
+    /// Small limits mean many short abstract searches with weak perimeters;
+    /// `usize::MAX` gives bidirectional Dijkstra.
     ///
     /// # Errors
     ///
     /// [`Error::OutOfMemory`] when the node table fills up.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sas_plus::{Effect, Fact, Operator, State, Task, Variable};
+    /// use symbolic_search::{Config, SymbolicTask};
+    ///
+    /// let op = |name: &str, from, to, cost| Operator {
+    ///     name: name.into(),
+    ///     pre: vec![Fact::new(0, from)],
+    ///     eff: vec![Effect::new(Fact::new(0, to))],
+    ///     cost,
+    /// };
+    /// let task = Task {
+    ///     variables: vec![Variable::new("at", 3)],
+    ///     operators: vec![op("direct", 0, 2, 5), op("a", 0, 1, 1), op("b", 1, 2, 1)],
+    ///     initial: State(vec![0]),
+    ///     goal: vec![Fact::new(0, 2)],
+    ///     axioms: vec![],
+    /// };
+    /// let config = Config { node_capacity: 1 << 10, cache_capacity: 1 << 8, ..Config::default() };
+    /// let symbolic = SymbolicTask::new(&task, config)?;
+    ///
+    /// for limit in [1, 64, usize::MAX] {
+    ///     let plan = symbolic.symba(limit)?.expect("solvable");
+    ///     assert_eq!(task.validate_plan(&plan), Some(2));
+    /// }
+    /// # Ok::<(), symbolic_search::Error>(())
+    /// ```
     pub fn symba(&self, frontier_node_limit: usize) -> Result<Option<Vec<OpId>>, Error> {
         Ok(self.model.symba(frontier_node_limit)?.0)
     }

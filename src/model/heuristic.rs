@@ -89,6 +89,11 @@ impl<B: Backend> Partition<B> {
         }
     }
 
+    /// Whether this is the blind heuristic: `h = 0` everywhere.
+    pub(crate) fn is_blind(&self, b: &B) -> bool {
+        matches!(self.buckets.as_slice(), [(0, all)] if *all == b.constant(true))
+    }
+
     /// The `(h, states)` pairs in ascending `h`.
     pub(crate) fn buckets(&self) -> &[(u64, B::Set)] {
         &self.buckets
