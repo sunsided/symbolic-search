@@ -57,12 +57,22 @@ fn searches(c: &mut Criterion) {
     group.finish();
 }
 
-/// Forward and bidirectional Dijkstra under merged disjunctive groups, one
-/// disjunctive relation per operator (to separate the cost of lost merging
-/// from the cost of the conjuncts), and conjunctive clusters under the
-/// greedy and the IWLS95 schedule.
-fn partitionings(c: &mut Criterion) {
-    let variants = [
+/// [`Config::default`] with conjunctive clusters of up to
+/// `cluster_node_limit` nodes (0: one cluster per conjunct) under
+/// `schedule`.
+fn conjunctive(cluster_node_limit: usize, schedule: Schedule) -> Config {
+    Config {
+        partitioning: Partitioning::Conjunctive {
+            cluster_node_limit,
+            schedule,
+        },
+        ..Config::default()
+    }
+}
+
+/// The partitioning variants of [`partitionings`], by benchmark name.
+fn partitioning_variants() -> [(&'static str, Config); 6] {
+    [
         ("disjunctive_merged", Config::default()),
         (
             "disjunctive_per_operator",
@@ -73,47 +83,30 @@ fn partitionings(c: &mut Criterion) {
         ),
         (
             "conjunctive_per_conjunct_greedy",
-            Config {
-                partitioning: Partitioning::Conjunctive {
-                    cluster_node_limit: 0,
-                    schedule: Schedule::Greedy,
-                },
-                ..Config::default()
-            },
+            conjunctive(0, Schedule::Greedy),
         ),
         (
             "conjunctive_per_conjunct_iwls95",
-            Config {
-                partitioning: Partitioning::Conjunctive {
-                    cluster_node_limit: 0,
-                    schedule: Schedule::Iwls95,
-                },
-                ..Config::default()
-            },
+            conjunctive(0, Schedule::Iwls95),
         ),
         (
             "conjunctive_clustered_greedy",
-            Config {
-                partitioning: Partitioning::Conjunctive {
-                    cluster_node_limit: 64,
-                    schedule: Schedule::Greedy,
-                },
-                ..Config::default()
-            },
+            conjunctive(64, Schedule::Greedy),
         ),
         (
             "conjunctive_clustered_iwls95",
-            Config {
-                partitioning: Partitioning::Conjunctive {
-                    cluster_node_limit: 64,
-                    schedule: Schedule::Iwls95,
-                },
-                ..Config::default()
-            },
+            conjunctive(64, Schedule::Iwls95),
         ),
-    ];
+    ]
+}
+
+/// Forward and backward Dijkstra under merged disjunctive groups, one
+/// disjunctive relation per operator (to separate the cost of lost merging
+/// from the cost of the conjuncts), and conjunctive clusters under the
+/// greedy and the IWLS95 schedule.
+fn partitionings(c: &mut Criterion) {
     let mut group = c.benchmark_group("gripper-costs-partitioning");
-    for (name, config) in variants {
+    for (name, config) in partitioning_variants() {
         let symbolic = gripper_with(config);
         group.bench_function(format!("{name}/forward_dijkstra"), |b| {
             b.iter(|| symbolic.forward_dijkstra());

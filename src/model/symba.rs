@@ -789,19 +789,11 @@ mod tuning {
         }
     }
 
-    /// Grid search over `SymbaConfig` on the large tasks: six random-walk
-    /// tasks ([`large_task`] seeds 0, 1, 2, 9, 12 and 35, the slowest of
-    /// the survey) and one unsolvable task (the plain
-    /// generator at seed 10, whose state space must be exhausted). Prints
-    /// summed concrete and abstract expansions and best-of-3 wall time,
-    /// each run on a freshly compiled model (compilation not timed), in
-    /// total and per task.
-    /// Run with `cargo test --release --lib tune_large -- --ignored
-    /// --nocapture`; `docs/design.md` records the numbers.
-    #[test]
-    #[ignore = "measurement, not a check"]
-    fn tune_large_defaults() {
-        let unsolvable = sas_plus::random::random_task(
+    /// The unsolvable task of [`tune_large_defaults`]: the plain generator
+    /// at seed 10 with 14 variables and 48 operators, whose state space must
+    /// be exhausted.
+    fn unsolvable_large_task() -> sas_plus::Task {
+        sas_plus::random::random_task(
             10,
             sas_plus::random::RandomTaskParams {
                 num_vars: 14,
@@ -809,12 +801,13 @@ mod tuning {
                 num_ops: 48,
                 ..sas_plus::random::RandomTaskParams::default()
             },
-        );
-        let tasks: Vec<_> = [0, 1, 2, 9, 12, 35]
-            .into_iter()
-            .map(large_task)
-            .chain([unsolvable])
-            .collect();
+        )
+    }
+
+    /// The configs [`tune_large_defaults`] compares: per frontier limit,
+    /// merge-and-shrink perimeters at 1024 nodes, then both drop
+    /// hierarchies for every abstract limit and slice.
+    fn large_tuning_grid() -> Vec<SymbaConfig> {
         let mut configs = Vec::new();
         for frontier_node_limit in [256, 1024, 10_000, usize::MAX] {
             configs.push(SymbaConfig {
@@ -839,6 +832,28 @@ mod tuning {
                 }
             }
         }
+
+        configs
+    }
+
+    /// Grid search over `SymbaConfig` on the large tasks: six random-walk
+    /// tasks ([`large_task`] seeds 0, 1, 2, 9, 12 and 35, the slowest of
+    /// the survey) and one unsolvable task (the plain
+    /// generator at seed 10, whose state space must be exhausted). Prints
+    /// summed concrete and abstract expansions and best-of-3 wall time,
+    /// each run on a freshly compiled model (compilation not timed), in
+    /// total and per task.
+    /// Run with `cargo test --release --lib tune_large -- --ignored
+    /// --nocapture`; `docs/design.md` records the numbers.
+    #[test]
+    #[ignore = "measurement, not a check"]
+    fn tune_large_defaults() {
+        let tasks: Vec<_> = [0, 1, 2, 9, 12, 35]
+            .into_iter()
+            .map(large_task)
+            .chain([unsolvable_large_task()])
+            .collect();
+        let configs = large_tuning_grid();
 
         for config in configs {
             let (mut concrete, mut abstract_work, mut time) = (0, 0, Duration::ZERO);
