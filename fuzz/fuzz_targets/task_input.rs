@@ -169,7 +169,7 @@ fn assert_valid(task: &Task, solution: &Solution, what: &str) {
     assert_eq!(
         task.validate_plan(&solution.plan),
         Some(solution.cost),
-        "{what}: plan {:?} is invalid or mis-costed",
+        "{what}: plan {:?} is invalid or its cost is wrong",
         solution.plan
     );
 }
