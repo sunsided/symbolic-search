@@ -29,8 +29,10 @@ applyTo: ".github/workflows/**,Taskfile.dist.yaml,**/Taskfile.dist.yaml,.pre-com
   `--all-targets` in the Taskfile and CI together, and say why in the PR.
 - `fuzz/` is a separate nightly workspace. Its tasks live in `fuzz/Taskfile.dist.yaml`,
   included as `fuzz:`; CI's `fuzz` job mirrors `task fuzz:build` and `task fuzz:lint`.
-- `Cargo.lock` and `fuzz/Cargo.lock` are tracked. The publish workflow builds and publishes
-  with `--locked`.
+- No `Cargo.lock` is tracked (root or `fuzz/`): this is a library, and local builds in the
+  planning hub patch published siblings to their working trees (the hub's
+  `.cargo/config.toml`), which rewrites the lock on every build. CI resolves fresh from
+  crates.io, and no step uses `--locked`.
 - `scripts/check-branch.sh` is the single definition of allowed branch names. It is used by
   the Taskfile, the hook and the CI `branch` job.
 - New jobs that should gate merges must also be added to branch protection. Mention that in
