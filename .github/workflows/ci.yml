@@ -186,7 +186,7 @@ jobs:
           tool: cargo-hack
       - run: cargo hack check --rust-version --workspace --all-targets --ignore-private
 
-  # Baseline: the published 0.0.0 placeholder on crates.io.
+  # Baseline: the latest release on crates.io.
   semver:
     name: semver
     if: github.event_name == 'pull_request'
