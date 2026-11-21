@@ -1,0 +1,51 @@
+[package]
+name = "symbolic-search-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sas-plus = { version = "0.2.1", default-features = false, features = ["random"] }
+
+[dependencies.symbolic-search]
+path = ".."
+
+[[bin]]
+name = "task_input"
+path = "fuzz_targets/task_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "search_optimality"
+path = "fuzz_targets/search_optimality.rs"
+test = false
+doc = false
+bench = false
+
+# A separate workspace, kept out of the root one (cargo-fuzz needs nightly).
+[workspace]
+
+# Mirrors the root lint table; `workspace = true` cannot reach a separate workspace.
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+mod_module_files = "deny"
+missing_docs_in_private_items = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+cognitive_complexity = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "allow"
