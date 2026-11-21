@@ -84,6 +84,8 @@
 //!
 //! Repository: <https://github.com/sunsided/symbolic-search>
 
+#![forbid(unsafe_code)]
+
 pub mod backend;
 mod encoding;
 mod error;
