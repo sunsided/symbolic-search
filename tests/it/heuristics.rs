@@ -59,7 +59,7 @@ fn singletons(task: &Task) -> Vec<Vec<VarId>> {
 /// merge-and-shrink heuristic on every reachable state: at most `h*`, dead
 /// only on real dead ends, and the canonical one at least every single
 /// PDB.
-fn check_canonical_values(task: &Task) {
+pub fn check_canonical_values(task: &Task) {
     let symbolic = SymbolicTask::new(task, SMALL).expect("task compiles");
     let patterns = singletons(task);
     let canonical = symbolic.canonical_pdbs(&patterns).expect("pdbs fit");
@@ -96,7 +96,7 @@ fn check_canonical_values(task: &Task) {
 
 /// Checks `BDDA*` with several heuristics and GBFS on `task`; returns the
 /// optimal cost.
-fn check_heuristic_search(task: &Task) -> Option<u64> {
+pub fn check_heuristic_search(task: &Task) -> Option<u64> {
     let expected = oracle::cheapest_plan_cost(task);
     for config in CONFIGS {
         let symbolic = SymbolicTask::new(task, config).expect("task compiles");
@@ -137,7 +137,7 @@ fn check_heuristic_search(task: &Task) -> Option<u64> {
 /// Checks the PDB of [`pattern`] on every reachable state against the
 /// explicit projection: equal without conditional effects, between the
 /// projection and `h*` with them.
-fn check_pdb_values(task: &Task) {
+pub fn check_pdb_values(task: &Task) {
     let symbolic = SymbolicTask::new(task, SMALL).expect("task compiles");
     let pattern = pattern(task);
     let pdb = symbolic.pdb(&pattern).expect("pdb fits");

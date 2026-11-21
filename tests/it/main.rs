@@ -8,6 +8,7 @@ mod fixtures;
 mod handmade;
 mod heuristics;
 mod oracle;
+mod properties;
 mod random;
 
 use sas_plus::Task;
