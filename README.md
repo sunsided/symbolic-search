@@ -1,6 +1,24 @@
 # symbolic-search
 
+[![crates.io](https://img.shields.io/crates/v/symbolic-search.svg)](https://crates.io/crates/symbolic-search)
+[![docs.rs](https://img.shields.io/docsrs/symbolic-search)](https://docs.rs/symbolic-search)
+[![CI](https://github.com/sunsided/symbolic-search/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/symbolic-search/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/sunsided/symbolic-search/graph/badge.svg)](https://codecov.io/gh/sunsided/symbolic-search)
+[![MSRV](https://img.shields.io/crates/msrv/symbolic-search)](https://crates.io/crates/symbolic-search)
+[![License](https://img.shields.io/crates/l/symbolic-search)](https://github.com/sunsided/symbolic-search#license)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
+
 Symbolic state-space search with decision diagrams: symbolic BFS, bidirectional search, BDDA* and SymBA*.
+
+## Installation
+
+```toml
+[dependencies]
+symbolic-search = { git = "https://github.com/sunsided/symbolic-search" }
+```
+
+The crate has no release yet; the crate-level docs (`cargo doc --open`)
+show a complete example.
 
 ## Status
 
@@ -38,13 +56,27 @@ Pre-release (0.0.0); the API will change.
 - Not done: axioms (rejected with `Error::Axioms`), mutex pruning,
   non-linear merge strategies, exact bisimulation and label reduction.
 
-See [`docs/design.md`](docs/design.md) for the design and milestones.
+See [`docs/design.md`](https://github.com/sunsided/symbolic-search/blob/main/docs/design.md)
+for the design and milestones.
+
+## Minimum supported Rust version
+
+Rust 1.91 (edition 2024). The MSRV applies to the library and its tests. It may be raised
+in a minor release when a dependency or a language feature calls for it.
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/sunsided/symbolic-search/blob/main/CONTRIBUTING.md).
 
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/sunsided/symbolic-search/blob/main/LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](https://github.com/sunsided/symbolic-search/blob/main/LICENSE-MIT))
 
 at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
+in this work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+without any additional terms or conditions.

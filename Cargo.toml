@@ -10,6 +10,19 @@ repository = "https://github.com/sunsided/symbolic-search"
 readme = "README.md"
 keywords = ["planning", "bdd", "symbolic", "search", "sas"]
 categories = ["algorithms", "science"]
+# Repository tooling stays out of the published crate.
+exclude = [
+    ".github/",
+    "scripts/",
+    ".pre-commit-config.yaml",
+    "Taskfile.dist.yaml",
+    "_typos.toml",
+    "clippy.toml",
+    "codecov.yml",
+    "deny.toml",
+    "release-plz.toml",
+    "rustfmt.toml",
+]
 
 [dependencies]
 oxidd = { version = "0.13.0", default-features = false, features = ["manager-index", "bcdd", "apply-cache-direct-mapped"] }
