@@ -1,6 +1,6 @@
 [package]
 name = "symbolic-search"
-description = "Symbolic state-space search with decision diagrams: symbolic BFS, bidirectional search, BDDA* and SymBA*"
+description = "Symbolic search for SAS+ planning with BDDs: symbolic BFS and Dijkstra, bidirectional search, BDDA*, SymBA* and symbolic abstraction heuristics"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.91"
@@ -8,8 +8,8 @@ authors = ["Markus Mayer <widemeadows@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sunsided/symbolic-search"
 readme = "README.md"
-keywords = ["planning", "bdd", "symbolic", "search", "sas"]
-categories = ["algorithms", "science"]
+keywords = ["planning", "bdd", "symbolic-search", "symba", "decision-diagram"]
+categories = ["algorithms", "artificial-intelligence", "science"]
 # Repository tooling stays out of the published crate.
 exclude = [
     ".github/",

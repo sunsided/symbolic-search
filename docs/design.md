@@ -3,7 +3,7 @@
 State-set search over SAS+ tasks with binary decision diagrams (BDDs). A
 search step maps a whole set of states, represented as one BDD, through the
 transition relation at once. The crate targets cost-optimal planning:
-symbolic BFS and Dijkstra, bidirectional search, BDDA\*, SymBA\* and, later,
+symbolic BFS and Dijkstra, bidirectional search, BDDA\*, SymBA\* and
 symbolic abstraction heuristics.
 
 Input is a `sas_plus::Task` (crates.io `sas-plus` 0.2.1). Output is a
@@ -176,7 +176,7 @@ fires. Unconditional effects collapse to `v' = a`. A test pins the
 (2019) encode derived variables symbolically, either by compiling the axiom
 fixpoint into a BDD per derived variable or by evaluating it per layer. The
 first fits `sas-plus` semantics (layered, negation by failure) and is
-planned for milestone 4.
+not implemented yet.
 
 ## Image and preimage
 
@@ -420,10 +420,9 @@ BDDA\* with a PDB on both backends and the oracles. The trait is sealed:
 its contract (fixed order, semantic equality, out-of-memory instead of
 panics) is not checked by types, and it grows with the algorithms.
 
-The 0.0.0 placeholder trait `SymbolicTransitions` (infallible `image`,
-`preimage`) was dropped. Its infallible signatures cannot report a full
-node table. A public trait for state-set transitions comes back if another
-crate needs one (see "Cross-crate needs").
+There is no public trait for state-set transitions: infallible `image` and
+`preimage` signatures could not report a full node table. One comes back
+if another crate needs it (see "Cross-crate needs").
 
 ## Testing strategy
 
@@ -515,29 +514,14 @@ crate needs one (see "Cross-crate needs").
 - **Later.** Comparisons against Fast Downward's symbolic search or SymBA\*
   on translated IPC tasks, outside CI.
 
-## Milestones
+## Not yet implemented
 
-1. **Done.** Encoding, per-operator relations with conditional effects,
-   forward and backward symbolic BFS, layered plan reconstruction, oxidd
-   backend behind `Backend`.
-2. **Done.** Gamer static variable order; merged disjunctive groups per
-   cost; symbolic Dijkstra forward, backward and bidirectional with
-   cost-aware reconstruction; BDDA\* and GBFS with partition heuristics;
-   symbolic PDBs; SymBA\* with variable-dropping perimeter abstractions.
-3. **Partly done.** Conjunctive partitioning with greedy and IWLS95
-   schedules; SymBA\* with resumable abstract searches, separate node
-   limits, a budget that returns the best plan and a bound, and a
-   bit-dropping hierarchy; canonical PDB collections; capacities from the
-   task with retries; plans with costs; a public backend trait.
-   **Next:** search statistics (layers, nodes, peak); time-based
-   direction choice; balanced-tree group merging; a better SymBA\*
-   abstraction hierarchy.
-4. **Axioms**, following Speck et al. (2019). State-invariant (mutex)
-   pruning when `sas-plus` provides mutex groups.
-5. **Merge-and-shrink.** Done in a first form: linear merging and
-   h-preserving node-limited shrinking, for BDDA\* and as SymBA\*
-   perimeters. **Next:** other merge strategies, bisimulation, label
-   reduction.
+- Search statistics (layers, nodes, peak), time-based direction choice,
+  balanced-tree group merging and a better SymBA\* abstraction hierarchy.
+- Axioms, following Speck et al. (2019), and state-invariant (mutex)
+  pruning once `sas-plus` provides mutex groups.
+- Merge-and-shrink beyond linear merging and h-preserving node-limited
+  shrinking: other merge strategies, bisimulation, label reduction.
 
 ## Cross-crate needs
 
@@ -553,11 +537,11 @@ crate needs one (see "Cross-crate needs").
   `successors` and `predecessors`, which is enough for Gamer's order. Edge
   weights (the number of operators that induce an edge) would help as a
   tie breaker. Nice to have.
-- **merge-and-shrink: BDD export.** For milestone 5, a way to turn an
+- **merge-and-shrink: BDD export.** A way to turn an
   abstraction (`abstract_state` plus goal distances) into BDDs per `h`
   value. Without an export, symbolic-search would rebuild the mapping
   through `sas_plus::Abstraction`, which works state by state and so needs a
-  factored representation of the mapping. Status lists "No BDD export".
+  factored representation of the mapping.
 - **Shared transition trait.** If `miniplan` wants to drive symbolic search
   through a trait, a fallible `image` and `preimage` trait could move to
   `search-core` once a second crate needs it.

@@ -13,6 +13,6 @@ applyTo: "**/*.md,docs/**"
 - Code blocks are tagged with their language. `README.md` has no Rust examples; the
   crate-level docs in `src/lib.rs` hold the doctested example. If a README gains a `rust`
   block, include it in a private `#[cfg(doctest)]` module in `src/lib.rs` in the same change.
-- `docs/design.md` describes the pipeline, the module map and the milestones. Keep its
-  mermaid pipeline, code map and milestone list in step with `src/`.
+- `docs/design.md` describes the pipeline, the module map and the open items. Keep its
+  mermaid pipeline, code map and open items in step with `src/`.
 - Keep badges, the License section and the MSRV statement consistent with `Cargo.toml`.

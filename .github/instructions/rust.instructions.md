@@ -33,6 +33,6 @@ applyTo: "**/*.rs"
 - New search features get oracle checks in `tests/it/`, and a property in
   `tests/it/properties.rs` or a fuzz target when they take new input or cost arithmetic.
 - Public API changes go with a matching update to the crate docs in `src/lib.rs`, the
-  README status list and `docs/design.md`.
+  README scope list and `docs/design.md`.
 - Mermaid diagrams in doc comments must match the code they describe. Update them when the
   structure changes.

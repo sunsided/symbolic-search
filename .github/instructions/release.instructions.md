@@ -11,8 +11,7 @@ applyTo: "**/Cargo.toml,release-plz.toml,.github/workflows/release-plz.yml,**/CH
 - Every publishable crate has `description`, `license`, `repository`, `readme`, `keywords`
   (at most 5) and `categories` (valid crates.io slugs), and declares `rust-version`. Crates that
   are not published (the fuzz crate) have `publish = false`.
-- The single crate `symbolic-search` is tagged `vX.Y.Z`. Releases are dormant until the
-  first real release; the crates.io name holds a 0.0.0 placeholder.
+- The single crate `symbolic-search` is tagged `vX.Y.Z`.
 - New dependencies must pass `cargo deny check`: allowed licenses, no advisories, no git or
   unknown-registry sources. Runtime dependencies are `oxidd` (behind `backend::Oxidd`) and `sas-plus`; adding one
   needs a reason in the PR. RUSTSEC ignores in `deny.toml` need a reason and an exit condition.

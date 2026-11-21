@@ -38,12 +38,10 @@
 //! IWLS95 quantification schedule ([`Schedule`]). The BDD library sits
 //! behind the public [`backend::Backend`] trait.
 //!
-//! ## Planned
+//! ## Not yet implemented
 //!
 //! Axioms, mutex pruning, non-linear merge strategies and bisimulation for
-//! merge-and-shrink, time-based step
-//! estimates for `SymBA*`. See `docs/design.md` in the
-//! repository.
+//! merge-and-shrink, time-based step estimates for `SymBA*`.
 //!
 //! ## Example
 //!
@@ -77,10 +75,6 @@
 //! assert_eq!(solution.cost, 2);
 //! # Ok::<(), symbolic_search::Error>(())
 //! ```
-//!
-//! ## Status
-//!
-//! Pre-release (0.0.0). The API will change.
 //!
 //! Repository: <https://github.com/sunsided/symbolic-search>
 
