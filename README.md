@@ -20,6 +20,8 @@ BDDs come from [oxidd](https://crates.io/crates/oxidd) behind a sealed backend t
 BDD implements the same trait and is used to cross-check oxidd in the tests. Node tables are sized from the task and
 grow on demand, so a search that runs out of nodes retries with a larger table instead of failing.
 
+Part of the [planning and search crates](https://sunsided.github.io/planning-and-search/); see also this crate's [overview page](https://sunsided.github.io/planning-and-search/crates/symbolic-search/).
+
 ## Who this is for
 
 - Planning researchers working on cost-optimal planning who want BDD-based search (SymBA\*, BDDA\*, symbolic PDBs,
