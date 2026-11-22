@@ -7,6 +7,7 @@ rust-version = "1.91"
 authors = ["Markus Mayer <widemeadows@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sunsided/symbolic-search"
+homepage = "https://sunsided.github.io/planning-and-search/crates/symbolic-search/"
 readme = "README.md"
 keywords = ["planning", "bdd", "symbolic-search", "symba", "decision-diagram"]
 categories = ["algorithms", "artificial-intelligence", "science"]
